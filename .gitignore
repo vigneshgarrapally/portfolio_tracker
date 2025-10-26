@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+exp.ipynb
+.github/copilot-instructions.md

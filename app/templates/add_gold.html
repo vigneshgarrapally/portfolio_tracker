@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h3 mb-0">Add Gold Holding</h1>
+        <a href="{{ url_for('gold') }}" class="btn btn-secondary">
+            <i class="bi bi-x-lg me-1"></i> Cancel
+        </a>
+    </div>
+
+    <ul class="nav nav-tabs" id="myTab" role="tablist">
+        </ul>
+
+    <div class="tab-content card" id="myTabContent">
+        <div class="tab-pane fade show active p-3" id="manual" role="tabpanel" aria-labelledby="manual-tab">
+            <form action="{{ url_for('add_gold') }}" method="POST">
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="user_id" class="form-label">User</label>
+                        <select class="form-select" id="user_id" name="user_id" required>
+                            {% for user in users %}
+                            <option value="{{ user.id }}">{{ user.name }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="invoice_date" class="form-label">Invoice Date</label>
+                        <input type="date" class="form-control" id="invoice_date" name="invoice_date" required>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="grams" class="form-label">Grams</label>
+                        <input type="number" step="0.0001" class="form-control" id="grams" name="grams" required>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="per_gm_price" class="form-label">Price per Gram (₹)</label>
+                        <input type="number" step="0.01" class="form-control" id="per_gm_price" name="per_gm_price" required>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="type" class="form-label">Type</label>
+                        <select class="form-select" id="type" name="type" required>
+                            <option value="Coin">Coin</option>
+                            <option value="Jewellery">Jewellery</option>
+                            <option value="SGB">SGB</option>
+                            <option value="Digital">Digital</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="purity" class="form-label">Purity</label>
+                        <select class="form-select" id="purity" name="purity">
+                            <option value="24K">24K</option>
+                            <option value="22K">22K</option>
+                            <option value="18K">18K</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-6 mb-3">
+                        <label for="platform" class="form-label">Platform (Where bought)</label>
+                        <select class="form-select" id="platform" name="platform">
+                            <option value="">None</option>
+                            {% for p in existing_platforms %}
+                            <option value="{{ p }}">{{ p }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-md-6 mb-3">
+                        <label for="brand" class="form-label">Brand</label>
+                        <select class="form-select" id="brand" name="brand">
+                            <option value="">None</option>
+                            {% for b in existing_brands %}
+                            <option value="{{ b }}">{{ b }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-12 mb-3">
+                        <label for="notes" class="form-label">Notes</label>
+                        <textarea class="form-control" id="notes" name="notes" rows="3"></textarea>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Transaction</button>
+            </form>
+        </div>
+        
+        <div class="tab-pane fade p-3" id="json" role="tabpanel" aria-labelledby="json-tab">
+            </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    $(document).ready(function() {
+        // --- Initialize Select2 ---
+        $('#platform').select2({
+            theme: "bootstrap-5",
+            tags: true, // Allows creating new tags
+            placeholder: "Select or type a platform"
+        });
+        
+        $('#brand').select2({
+            theme: "bootstrap-5",
+            tags: true, // Allows creating new tags
+            placeholder: "Select or type a brand"
+        });
+        
+        // Simple select2 for non-create fields
+        $('#user_id').select2({ theme: "bootstrap-5" });
+        $('#type').select2({ theme: "bootstrap-5" });
+        $('#purity').select2({ theme: "bootstrap-5" });
+    });
+</script>
+{% endblock %}

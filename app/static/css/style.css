@@ -1,0 +1,40 @@
+body {
+    display: flex;
+    min-height: 100vh;
+    flex-direction: column;
+}
+
+.d-flex {
+    flex: 1;
+}
+
+.sidebar {
+    width: 280px;
+    min-height: 100vh;
+}
+
+.main-content {
+    flex-grow: 1;
+    overflow-x: hidden;
+}
+
+.sidebar .nav-link {
+    font-size: 1.1rem;
+    padding-top: 0.75rem;
+    padding-bottom: 0.75rem;
+}
+
+.sidebar .nav-link:hover {
+    background-color: #495057;
+}
+
+.sidebar .nav-link.active {
+    background-color: #0d6efd;
+}
+
+.card-header {
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    background-color: #f8f9fa;
+}

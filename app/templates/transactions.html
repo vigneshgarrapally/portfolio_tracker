@@ -1,0 +1,451 @@
+{% extends "base.html" %} 
+
+{% block content %}
+<h1 class="text-white mb-4">Transactions</h1>
+
+<ul class="nav nav-tabs" id="assetTypeTab" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button
+      class="nav-link active"
+      id="gold-tab"
+      data-bs-toggle="tab"
+      data-bs-target="#gold-pane"
+      type="button"
+      role="tab"
+      aria-selected="true"
+    >
+      <i class="bi bi-gem me-2"></i>Gold & Metals
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button
+      class="nav-link"
+      id="stocks-tab"
+      data-bs-toggle="tab"
+      data-bs-target="#stocks-pane"
+      type="button"
+      role="tab"
+      aria-selected="false"
+    >
+      <i class="bi bi-bar-chart-line-fill me-2"></i>Stocks & MFs
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button
+      class="nav-link"
+      id="real-estate-tab"
+      data-bs-toggle="tab"
+      data-bs-target="#real-estate-pane"
+      type="button"
+      role="tab"
+      aria-selected="false"
+    >
+      <i class="bi bi-house-fill me-2"></i>Real Estate
+    </button>
+  </li>
+</ul>
+<div class="tab-content py-4" id="assetTypeTabContent">
+  <div
+    class="tab-pane fade show active"
+    id="gold-pane"
+    role="tabpanel"
+    aria-labelledby="gold-tab"
+  >
+    <div class="d-flex justify-content-end mb-3">
+      <button
+        type="button"
+        class="btn btn-primary"
+        data-bs-toggle="modal"
+        data-bs-target="#addGoldModal"
+      >
+        <i class="bi bi-plus-lg me-1"></i> Add Gold Transactions
+      </button>
+    </div>
+
+    <div class="card bg-dark text-white">
+      <div class="card-body">
+        <h5 class="card-title">All Gold Transactions</h5>
+        <form
+          method="GET"
+          action="{{ url_for('transactions') }}"
+          class="mb-3"
+        >
+          <div class="row g-3">
+            <div class="col-lg-4">
+              <label for="accounts" class="form-label">Account</label>
+              <select
+                name="accounts"
+                id="accounts"
+                class="form-select"
+                onchange="this.form.submit()"
+              >
+                <option value="">All Accounts</option>
+                {% for acc in all_accounts %}
+                <option
+                  value="{{ acc.account_id }}"
+                  {% if acc.account_id|string ==
+                  request.args.get('accounts') %}selected{% endif %}
+                >
+                  {{ acc.name }}
+                </option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="col-lg-4">
+              <label for="tx_type" class="form-label">Transaction Type</label>
+              <select
+                name="tx_type"
+                id="tx_type"
+                class="form-select"
+                onchange="this.form.submit()"
+              >
+                <option value="">All Types</option>
+                <option
+                  value="BUY"
+                  {% if 'BUY' == request.args.get('tx_type') %}selected{% endif %}
+                >
+                  Buy
+                </option>
+                <option
+                  value="SELL"
+                  {% if 'SELL' == request.args.get('tx_type') %}selected{% endif %}
+                >
+                  Sell
+                </option>
+              </select>
+            </div>
+          </div>
+        </form>
+        <div class="table-responsive">
+          <table class="table table-dark table-striped table-hover mb-0">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Account</th>
+                <th>Asset</th>
+                <th>Type</th>
+                <th class="text-end">Quantity</th>
+                <th class="text-end">Unit Price (₹)</th>
+                <th class="text-end">Total Value (₹)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if transactions %} 
+                {% for tx in transactions %}
+                <tr>
+                  <td>{{ tx.transaction_date.strftime('%Y-%m-%d') }}</td>
+                  <td>{{ tx.account.name }}</td>
+                  <td>{{ tx.asset.asset_name }}</td>
+                  <td>
+                    <span
+                      class="badge 
+                      {{ 'text-bg-success' if tx.transaction_type.name == 'BUY' else 
+                         'text-bg-danger' if tx.transaction_type.name == 'SELL' else 
+                         'text-bg-info' }}"
+                    >
+                      {{ tx.transaction_type.name }}
+                    </span>
+                  </td>
+                  <td class="text-end">{{ tx.quantity|round(4) }}</td>
+                  <td class="text-end">
+                    ₹{{ "%.2f"|format(tx.unit_price) }}
+                  </td>
+                  <td class="text-end">
+                    ₹{{ "%.2f"|format(tx.quantity * tx.unit_price) }}
+                  </td>
+                </tr>
+                {% endfor %} 
+              {% else %}
+                <tr>
+                  <td colspan="7" class="text-center text-secondary py-4">
+                    No transactions found for the selected filters.
+                  </td>
+                </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+        </div>
+    </div>
+  </div>
+  <div
+    class="tab-pane fade"
+    id="stocks-pane"
+    role="tabpanel"
+    aria-labelledby="stocks-tab"
+  >
+    <div class="card bg-dark text-white">
+      <div class="card-body">
+        <h5 class="card-title">Stocks & MFs</h5>
+        <p class="card-text text-secondary">
+          This section will contain the CRUD operations for stocks and mutual
+          funds.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div
+    class="tab-pane fade"
+    id="real-estate-pane"
+    role="tabpanel"
+    aria-labelledby="real-estate-tab"
+  >
+    <div class="card bg-dark text-white">
+      <div class="card-body">
+        <h5 class="card-title">Real Estate</h5>
+        <p class="card-text text-secondary">
+          This section will contain the forms for adding properties.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+<div
+  class="modal fade"
+  id="addGoldModal"
+  tabindex="-1"
+  aria-labelledby="addGoldModalLabel"
+  aria-hidden="true"
+>
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content bg-dark text-white">
+      <div class="modal-header">
+        <h5 class="modal-title" id="addGoldModalLabel">
+          Add Gold Transactions
+        </h5>
+        <button
+          type="button"
+          class="btn-close btn-close-white"
+          data-bs-dismiss="modal"
+          aria-label="Close"
+        ></button>
+      </div>
+      <div class="modal-body">
+        <ul class="nav nav-tabs" id="modalTab" role="tablist">
+          <li class="nav-item" role="presentation">
+            <button
+              class="nav-link active"
+              id="manual-add-tab"
+              data-bs-toggle="tab"
+              data-bs-target="#manual-add-pane"
+              type="button"
+              role="tab"
+              aria-selected="true"
+            >
+              Add Manually
+            </button>
+          </li>
+          <li class="nav-item" role="presentation">
+            <button
+              class="nav-link"
+              id="csv-import-tab"
+              data-bs-toggle="tab"
+              data-bs-target="#csv-import-pane"
+              type="button"
+              role="tab"
+              aria-selected="false"
+            >
+              Import from CSV
+            </button>
+          </li>
+        </ul>
+        <div class="tab-content py-4" id="modalTabContent">
+          <div
+            class="tab-pane fade show active"
+            id="manual-add-pane"
+            role="tabpanel"
+          >
+            <form
+              method="POST"
+              action="{{ url_for('add_gold_batch') }}"
+              id="batch-form"
+            >
+              <div class="row">
+                <div class="col-md-6 mb-3">
+                  <label for="batch_account_id" class="form-label"
+                    >Account</label
+                  >
+                  <select
+                    class="form-select"
+                    id="batch_account_id"
+                    name="account_id"
+                    required
+                  >
+                    {% for acc in form_accounts %}
+                    <option value="{{ acc.account_id }}">
+                      {{ acc.name }} ({{ acc.email }})
+                    </option>
+                    {% endfor %}
+                  </select>
+                  <small class="form-text text-secondary"
+                    >All transactions in this batch will be assigned to this
+                    account.</small
+                  >
+                </div>
+              </div>
+              <div id="transaction-rows-container">
+                </div>
+              <button
+                type="button"
+                class="btn btn-outline-primary mt-3"
+                id="add-row-btn"
+              >
+                <i class="bi bi-plus-lg me-1"></i> Add Another
+              </button>
+              <hr class="my-4" />
+              <button type="submit" class="btn btn-primary">
+                Submit All Transactions
+              </button>
+            </form>
+          </div>
+          <div class="tab-pane fade" id="csv-import-pane" role="tabpanel">
+            <form
+              method="POST"
+              action="{{ url_for('import_gold_csv') }}"
+              enctype="multipart/form-data"
+            >
+              <p>
+                Upload a CSV file to import transactions for one or more
+                accounts.
+              </p>
+              <div class="mb-3">
+                <label for="file" class="form-label">CSV File</label>
+                <input
+                  class="form-control"
+                  type="file"
+                  id="file"
+                  name="file"
+                  accept=".csv"
+                  required
+                />
+              </div>
+              <div class="alert alert-secondary">
+                <h5 class="alert-heading">CSV Format</h5>
+                <code>account_email,date,type,quantity,unit_price,brand,purity</code>
+                <hr />
+                <p class="mb-0">
+                  Example:
+                  <code
+                    >vignesh@example.com,2025-10-25,BUY,10.5,6500.00,MMTC,24</code
+                  >
+                </p>
+              </div>
+              <button type="submit" class="btn btn-primary">
+                Upload and Import
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="transaction-row-template" class="d-none">
+  <div class="row g-3 align-items-end p-3 border rounded-3 mb-3">
+    <div class="col-md-6 col-lg-3">
+      <label class="form-label">Date</label>
+      <input
+        type="date"
+        class="form-control"
+        name="transaction_date"
+        required
+      />
+    </div>
+    <div class="col-md-6 col-lg-2">
+      <label class="form-label">Type</label>
+      <select class="form-select" name="transaction_type" required>
+        <option value="BUY">Buy</option>
+        <option value="SELL">Sell</option>
+      </select>
+    </div>
+    <div class="col-md-4 col-lg-2">
+      <label class="form-label">Qty (g)</label>
+      <input
+        type="number"
+        step="0.001"
+        class="form-control"
+        name="quantity"
+        placeholder="10.5"
+        required
+      />
+    </div>
+    <div class="col-md-4 col-lg-2">
+      <label class="form-label">Price/g (₹)</label>
+      <input
+        type="number"
+        step="0.01"
+        class="form-control"
+        name="unit_price"
+        placeholder="6000"
+        required
+      />
+    </div>
+    <div class="col-md-4 col-lg-2">
+      <label class="form-label">Brand</label>
+      <input
+        type="text"
+        class="form-control"
+        name="coin_brand"
+        list="brand-options"
+      />
+      <datalist id="brand-options">
+        {% for brand in brands %}
+        <option value="{{ brand }}"></option>
+        {% endfor %}
+      </datalist>
+    </div>
+    <div class="col-md-6 col-lg-2">
+      <label class="form-label">Purity</label>
+      <select class="form-select" name="coin_purity">
+        <option value="">...</option>
+        <option value="18">18K</option>
+        <option value="22">22K</option>
+        <option value="24">24K</option>
+      </select>
+    </div>
+    <div class="col-md-6 col-lg-1">
+      <button type="button" class="btn btn-danger delete-row-btn">
+        <i class="bi bi-trash-fill"></i>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    const addRowBtn = document.getElementById("add-row-btn");
+    const container = document.getElementById("transaction-rows-container");
+    const template = document.getElementById("transaction-row-template");
+
+    // This function must check if the elements exist first
+    // in case the template or button isn't on the page
+    function initializeDynamicRows() {
+      if (!addRowBtn || !container || !template) {
+        return; // Do nothing if elements aren't found
+      }
+
+      function addNewRow() {
+        const newRow = template.firstElementChild.cloneNode(true);
+        newRow
+          .querySelector(".delete-row-btn")
+          .addEventListener("click", function () {
+            this.closest(".row").remove();
+          });
+        container.appendChild(newRow);
+      }
+
+      // Add one row by default when the modal is first built
+      if (container.children.length === 0) {
+        addNewRow();
+      }
+
+      addRowBtn.addEventListener("click", addNewRow);
+    }
+
+    // Call the function to set up the listeners
+    initializeDynamicRows();
+  });
+</script>
+{% endblock %}

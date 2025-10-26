@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h3 mb-0">Gold</h1>
+        <div>
+            <a href="{{ url_for('add_gold') }}" class="btn btn-primary">
+                <i class="bi bi-plus-lg me-1"></i> Add Holding
+            </a>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <form method="GET" action="{{ url_for('gold') }}" class="row g-3 align-items-center">
+                <div class="col-auto">
+                    <label for="user_id" class="col-form-label">Filter by User:</label>
+                </div>
+                <div class="col-auto">
+                    <select class="form-select" id="user_id" name="user_id" onchange="this.form.submit()">
+                        <option value="">All Users</option>
+                        {% for user in all_users %}
+                            <option value="{{ user.id }}" {{ 'selected' if user.id == selected_user_id }}>
+                                {{ user.name }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <a href="{{ url_for('gold') }}" class="btn btn-outline-secondary">Clear</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card text-center">
+                <div class="card-header">Current Holdings</div>
+                <div class="card-body">{{ "%.4f"|format(summary.current_holdings) }} gm</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center">
+                <div class="card-header">Total Invested Value</div>
+                <div class="card-body">₹{{ "%.2f"|format(summary.total_investment) }}</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center">
+                <div class="card-header">Average Buy Price</div>
+                <div class="card-body">₹{{ "%.2f"|format(summary.average_price) }} /gm</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card text-center">
+                <div class="card-header">Current Value</div>
+                <div class="card-body text-muted">₹0.00 (TBD)</div>
+            </div>
+        </div>
+    </div>
+
+    <h4 class="mt-4">Gold Holdings</h4>
+    <div class="card">
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>User</th>
+                            <th>Type</th>
+                            <th>Weight (gm)</th>
+                            <th>Remaining (gm)</th>
+                            <th>Price / gm</th>
+                            <th>Purity</th>
+                            <th>Platform</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for tx in buy_transactions %}
+                        <tr class="{{ 'table-secondary text-muted' if tx.remaining_grams <= 0 else '' }}">
+                            <td>{{ tx.invoice_date.strftime('%Y-%m-%d') }}</td>
+                            <td>{{ tx.user.name }}</td>
+                            <td>{{ tx.type }}</td>
+                            <td>{{ "%.4f"|format(tx.grams) }}</td>
+                            <td><strong>{{ "%.4f"|format(tx.remaining_grams) }}</strong></td>
+                            <td>{{ "%.2f"|format(tx.per_gm_price) }}</td>
+                            <td>{{ tx.purity or 'N/A' }}</td>
+                            <td>{{ tx.platform or 'N/A' }}</td>
+                            <td>
+                                <a href="{{ url_for('edit_gold', tx_id=tx.id) }}" class="btn btn-sm btn-outline-primary me-1" title="View Details / Sell">
+                                    <i class="bi bi-pencil"></i> Details
+                                </a>
+                                
+                                {% if tx.linked_sells.count() == 0 %}
+                                <form action="{{ url_for('delete_gold', tx_id=tx.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this holding?');">
+                                    <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </form>
+                                {% else %}
+                                <button class="btn btn-sm btn-outline-danger" disabled title="Cannot delete holding with linked sales.">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="9" class="text-center">No gold holdings found.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    {% endblock %}
