@@ -4,10 +4,10 @@
     <div class="d-flex justify-content-between align-items-center mb-3">
         <h1 class="h3 mb-0">Gold</h1>
         <div>
-            <a href="{{ url_for('add_gold') }}" class="btn btn-primary">
-                <i class="bi bi-plus-lg me-1"></i> Add Holding
-            </a>
-        </div>
+        <a href="{{ url_for('add_gold') }}" class="btn btn-primary">
+            <i class="bi bi-plus-lg me-1"></i> Add Holding
+        </a>
+    </div>
     </div>
 
     <div class="card mb-3">
@@ -31,7 +31,7 @@
                 </div>
             </form>
         </div>
-    </div>
+        </div>
 
     <div class="row mb-4">
         <div class="col-md-3">
@@ -58,7 +58,7 @@
                 <div class="card-body text-muted">₹0.00 (TBD)</div>
             </div>
         </div>
-    </div>
+        </div>
 
     <h4 class="mt-4">Gold Holdings</h4>
     <div class="card">
@@ -71,10 +71,10 @@
                             <th>User</th>
                             <th>Type</th>
                             <th>Weight (gm)</th>
-                            <th>Remaining (gm)</th>
                             <th>Price / gm</th>
                             <th>Purity</th>
                             <th>Platform</th>
+                            <th>Brand</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -84,14 +84,18 @@
                             <td>{{ tx.invoice_date.strftime('%Y-%m-%d') }}</td>
                             <td>{{ tx.user.name }}</td>
                             <td>{{ tx.type }}</td>
-                            <td>{{ "%.4f"|format(tx.grams) }}</td>
-                            <td><strong>{{ "%.4f"|format(tx.remaining_grams) }}</strong></td>
+                            <td>{{ "%.2f"|format(tx.grams) }}</td>
                             <td>{{ "%.2f"|format(tx.per_gm_price) }}</td>
                             <td>{{ tx.purity or 'N/A' }}</td>
                             <td>{{ tx.platform or 'N/A' }}</td>
+                            <td>{{tx.brand}}    </td>
                             <td>
-                                <a href="{{ url_for('edit_gold', tx_id=tx.id) }}" class="btn btn-sm btn-outline-primary me-1" title="View Details / Sell">
-                                    <i class="bi bi-pencil"></i> Details
+                                <a href="{{ url_for('view_gold', tx_id=tx.id) }}" class="btn btn-sm btn-outline-primary me-1" title="View Details / Sell">
+                                    <i class="bi bi-eye"></i> View
+                                </a>
+                                
+                                <a href="{{ url_for('edit_gold', tx_id=tx.id) }}" class="btn btn-sm btn-outline-secondary me-1" title="Edit Holding Details">
+                                    <i class="bi bi-pencil"></i>
                                 </a>
                                 
                                 {% if tx.linked_sells.count() == 0 %}
@@ -117,5 +121,4 @@
             </div>
         </div>
     </div>
-
-    {% endblock %}
+{% endblock %}

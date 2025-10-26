@@ -158,6 +158,20 @@ def gold():
     )
 
 
+@app.route("/gold/view/<int:tx_id>")
+def view_gold(tx_id):
+    """
+    Shows read-only details for a holding and list of its linked sales.
+    This is where new sales are added from.
+    """
+    tx = GoldTransaction.query.get_or_404(tx_id)
+    linked_sells = tx.linked_sells.order_by(
+        GoldSellTransaction.sell_date.desc()
+    ).all()
+
+    return render_template("view_gold.html", tx=tx, linked_sells=linked_sells)
+
+
 @app.route("/gold/add", methods=["GET", "POST"])
 def add_gold():
     """Add a new gold BUY transaction (holding)."""
@@ -183,24 +197,7 @@ def add_gold():
         except Exception as e:
             db.session.rollback()
             flash(f"Error adding holding: {str(e)}", "danger")
-            # Need to re-fetch this data on error
-            users = User.query.all()
-            existing_platforms = [
-                p[0]
-                for p in db.session.query(GoldTransaction.platform).distinct()
-                if p[0]
-            ]
-            existing_brands = [
-                b[0]
-                for b in db.session.query(GoldTransaction.brand).distinct()
-                if b[0]
-            ]
-            return render_template(
-                "add_gold.html",
-                users=users,
-                existing_platforms=existing_platforms,
-                existing_brands=existing_brands,
-            )
+            return redirect(url_for("add_gold"))
 
     users = User.query.all()
     if not users:
@@ -248,9 +245,7 @@ def edit_gold(tx_id):
 
             db.session.commit()
             flash("Holding updated successfully!", "success")
-            return redirect(
-                url_for("edit_gold", tx_id=tx.id)
-            )  # Redirect back to edit page
+            return redirect(url_for("view_gold", tx_id=tx.id))
         except Exception as e:
             db.session.rollback()
             flash(f"Error updating holding: {str(e)}", "danger")
@@ -266,16 +261,12 @@ def edit_gold(tx_id):
                 for b in db.session.query(GoldTransaction.brand).distinct()
                 if b[0]
             ]
-            linked_sells = tx.linked_sells.order_by(
-                GoldSellTransaction.sell_date.desc()
-            ).all()
             return render_template(
                 "edit_gold.html",
                 tx=tx,
                 users=users,
                 existing_platforms=existing_platforms,
                 existing_brands=existing_brands,
-                linked_sells=linked_sells,
             )
 
     users = User.query.all()
@@ -290,17 +281,13 @@ def edit_gold(tx_id):
         if b[0]
     ]
 
-    linked_sells = tx.linked_sells.order_by(
-        GoldSellTransaction.sell_date.desc()
-    ).all()
-
+    # --- No longer fetches linked_sells ---
     return render_template(
         "edit_gold.html",
         tx=tx,
         users=users,
         existing_platforms=existing_platforms,
         existing_brands=existing_brands,
-        linked_sells=linked_sells,
     )
 
 
@@ -324,11 +311,6 @@ def delete_gold(tx_id):
     return redirect(url_for("gold"))
 
 
-# ... (upload_gold_json remains unchanged) ...
-
-# === Sell Routes (Now heavily modified) ===
-
-
 @app.route("/gold/sell/<int:buy_id>", methods=["GET", "POST"])
 def add_gold_sell(buy_id):
     """Add a new gold SELL transaction LINKED to a holding."""
@@ -338,16 +320,15 @@ def add_gold_sell(buy_id):
     if request.method == "POST":
         grams_to_sell = Decimal(request.form.get("grams"))
 
-        if grams_to_sell > max_grams:
+        if grams_to_sell > max_grams or grams_to_sell <= 0:
             flash(
-                f"Cannot sell more than the remaining {max_grams} gm for this holding.",
+                f"Grams must be positive and no more than {max_grams} gm.",
                 "danger",
             )
             return redirect(url_for("add_gold_sell", buy_id=buy_id))
 
         try:
             new_tx = GoldSellTransaction(
-                # --- User is now taken from the holding ---
                 user_id=buy_tx.user_id,
                 sell_date=datetime.strptime(
                     request.form.get("sell_date"), "%Y-%m-%d"
@@ -363,8 +344,8 @@ def add_gold_sell(buy_id):
             db.session.add(new_tx)
             db.session.commit()
             flash("Gold (Sell) transaction added successfully!", "success")
-            # --- Redirect back to the edit holding page ---
-            return redirect(url_for("edit_gold", tx_id=buy_id))
+            # --- Redirect back to the VIEW page ---
+            return redirect(url_for("view_gold", tx_id=buy_id))
         except Exception as e:
             db.session.rollback()
             flash(f"Error adding sell transaction: {str(e)}", "danger")
@@ -379,15 +360,14 @@ def add_gold_sell(buy_id):
 def edit_gold_sell(tx_id):
     """Edit an existing gold SELL transaction."""
     tx = GoldSellTransaction.query.get_or_404(tx_id)
-
     max_grams = tx.linked_buy.remaining_grams + tx.grams
 
     if request.method == "POST":
         grams_to_sell = Decimal(request.form.get("grams"))
 
-        if grams_to_sell > max_grams:
+        if grams_to_sell > max_grams or grams_to_sell <= 0:
             flash(
-                f"Cannot sell more than the {max_grams} gm available for this holding.",
+                f"Grams must be positive and no more than {max_grams} gm.",
                 "danger",
             )
             return redirect(url_for("edit_gold_sell", tx_id=tx.id))
@@ -405,8 +385,8 @@ def edit_gold_sell(tx_id):
 
             db.session.commit()
             flash("Sell transaction updated successfully!", "success")
-            # --- Redirect back to the edit holding page ---
-            return redirect(url_for("edit_gold", tx_id=tx.linked_buy_id))
+            # --- Redirect back to the VIEW page ---
+            return redirect(url_for("view_gold", tx_id=tx.linked_buy_id))
         except Exception as e:
             db.session.rollback()
             flash(f"Error updating sell transaction: {str(e)}", "danger")
@@ -421,7 +401,6 @@ def edit_gold_sell(tx_id):
 def delete_gold_sell(tx_id):
     """Delete a gold SELL transaction."""
     tx = GoldSellTransaction.query.get_or_404(tx_id)
-    # Store the ID to redirect back to the holding edit page
     buy_id = tx.linked_buy_id
     try:
         db.session.delete(tx)
@@ -431,7 +410,8 @@ def delete_gold_sell(tx_id):
         db.session.rollback()
         flash(f"Error deleting sell transaction: {str(e)}", "danger")
 
-    return redirect(url_for("edit_gold", tx_id=buy_id))
+    # --- Redirect back to the VIEW page ---
+    return redirect(url_for("view_gold", tx_id=buy_id))
 
 
 @app.route("/gold/upload_json", methods=["POST"])
