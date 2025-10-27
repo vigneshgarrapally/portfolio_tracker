@@ -1,9 +1,16 @@
 import json
-from flask import render_template, request, redirect, url_for, flash, jsonify
+from flask import render_template, request, redirect, url_for, flash
 from app import app, db
-from app.models import User, GoldTransaction, GoldSellTransaction
-from datetime import datetime
+from app.models import User, GoldTransaction, GoldSellTransaction, GoldPrice
+from datetime import datetime, date
 from decimal import Decimal
+
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 # === Main Routes ===
 
@@ -458,3 +465,208 @@ def upload_gold_json():
         flash("Invalid file type. Please upload a .json file.", "danger")
 
     return redirect(url_for("gold"))
+
+
+@app.route("/gold/prices")
+def gold_prices():
+    """
+    Display the page for manually adding/updating prices
+    and triggering the auto-fetch.
+    """
+    prices = GoldPrice.query.order_by(GoldPrice.date.desc()).all()
+    today_str = date.today().strftime("%Y-%m-%d")
+    return render_template(
+        "gold_prices.html", prices=prices, today_str=today_str
+    )
+
+
+@app.route("/gold/prices/add", methods=["POST"])
+def add_gold_price():
+    """
+    Handle the manual form submission for adding or updating a price.
+    """
+    try:
+        date_str = request.form.get("date")
+        price_str = request.form.get("price_per_gram_24k")
+
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+        price_24k = Decimal(price_str)
+
+        if price_24k < 0:
+            flash("Price cannot be negative.", "danger")
+            return redirect(url_for("gold_prices"))
+
+        existing_price = GoldPrice.query.filter_by(date=date_obj).first()
+
+        if existing_price:
+            if existing_price.price_per_gram_24k != price_24k:
+                existing_price.price_per_gram_24k = price_24k
+                existing_price.source = "Manual"
+                db.session.add(existing_price)
+                flash(
+                    f"Price for {date_str} updated successfully.", "success"
+                )
+            else:
+                flash(
+                    f"Price for {date_str} is already set to this value.",
+                    "info",
+                )
+        else:
+            new_price = GoldPrice(
+                date=date_obj, price_per_gram_24k=price_24k, source="Manual"
+            )
+            db.session.add(new_price)
+            flash(f"Price for {date_str} added successfully.", "success")
+
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error adding price: {str(e)}", "danger")
+
+    return redirect(url_for("gold_prices"))
+
+
+@app.route("/gold/prices/fetch", methods=["POST"])
+def fetch_gold_prices():
+    """
+    Run the Selenium scraper to fetch prices from Tanishq.
+    """
+    url = "https://www.tanishq.co.in/gold-rate.html"
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Safari/537.36"
+    )
+
+    try:
+        driver = webdriver.Chrome(options=options)
+        driver.set_page_load_timeout(30)  # 30 second timeout for page load
+    except Exception as e:
+        flash(
+            f"Error initializing WebDriver: {e}. Is chromedriver installed and in your PATH?",
+            "danger",
+        )
+        return redirect(url_for("gold_prices"))
+
+    try:
+        driver.get(url)
+        wait = WebDriverWait(driver, 30)  # 30 second timeout for element
+
+        TABLE_XPATH = (
+            "//table[@class='table goldrate-table goldrate-history-table']"
+        )
+        table_element = wait.until(
+            EC.presence_of_element_located((By.XPATH, TABLE_XPATH))
+        )
+
+        rows = table_element.find_elements(By.XPATH, "./tbody/tr")
+        if not rows:
+            flash(
+                "Scrape successful, but no data rows were found in the table.",
+                "warning",
+            )
+            return redirect(url_for("gold_prices"))
+
+        added_count = 0
+        updated_count = 0
+        ignored_count = 0
+        failed_count = 0
+
+        for row in rows:
+            try:
+                cells = row.find_elements(By.TAG_NAME, "td")
+
+                # --- MODIFIED: Check for 2 cells based on your output ---
+                if not cells or len(cells) < 2:
+                    failed_count += 1
+                    continue
+
+                # --- MODIFIED: Get date and price from cells 0 and 1 ---
+                date_str = cells[0].text
+                price_22k_10g_str = cells[1].text  # This is for 10g of 22K
+
+                # --- MODIFIED: New date format %d-%m-%Y ---
+                date_obj = datetime.strptime(date_str, "%d-%m-%Y").date()
+
+                price_22k_10g = Decimal(
+                    price_22k_10g_str.replace("₹", "")
+                    .replace(",", "")
+                    .strip()
+                )
+
+                # --- MODIFIED: Convert 10g price to 1g price ---
+                price_22k_1g = price_22k_10g / Decimal("10")
+
+                # --- MODIFIED: Convert 22K 1g price to 24K 1g price ---
+                price_24k_1g = (price_22k_1g / Decimal("22")) * Decimal("24")
+
+                # Upsert logic
+                existing_price = GoldPrice.query.filter_by(
+                    date=date_obj
+                ).first()
+
+                if existing_price:
+                    # Use a small tolerance for comparison
+                    if not abs(
+                        existing_price.price_per_gram_24k - price_24k_1g
+                    ) < Decimal("0.01"):
+                        existing_price.price_per_gram_24k = price_24k_1g
+                        existing_price.source = "Tanishq (auto-fetch)"
+                        db.session.add(existing_price)
+                        updated_count += 1
+                    else:
+                        ignored_count += 1
+                else:
+                    new_price = GoldPrice(
+                        date=date_obj,
+                        price_per_gram_24k=price_24k_1g,
+                        source="Tanishq (auto-fetch)",
+                    )
+                    db.session.add(new_price)
+                    added_count += 1
+
+            except Exception as e:
+                # Catch errors on a per-row basis
+                print(f"Failed to process row for date {cells[0].text}: {e}")
+                failed_count += 1
+
+        db.session.commit()
+        flash(
+            f"Fetch complete. Added: {added_count}, Updated: {updated_count}, Ignored: {ignored_count}, Failed rows: {failed_count}",
+            "success",
+        )
+
+    except TimeoutException:
+        flash(
+            "Failed to fetch prices: The page (or a required element) took too long to load (Timeout > 30s).",
+            "danger",
+        )
+    except Exception as e:
+        flash(f"An error occurred during data extraction: {e}", "danger")
+    finally:
+        driver.quit()
+
+    return redirect(url_for("gold_prices"))
+
+
+# --- NEW: Delete Price Route ---
+@app.route("/gold/prices/delete/<int:price_id>", methods=["POST"])
+def delete_gold_price(price_id):
+    """
+    Delete a manually entered or fetched price.
+    """
+    price = GoldPrice.query.get_or_404(price_id)
+    try:
+        db.session.delete(price)
+        db.session.commit()
+        flash(
+            f'Price for {price.date.strftime("%Y-%m-%d")} deleted.', "success"
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting price: {str(e)}", "danger")
+
+    return redirect(url_for("gold_prices"))

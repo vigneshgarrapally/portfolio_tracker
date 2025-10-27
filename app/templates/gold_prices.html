@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h1 class="h3 mb-0">Update Gold Prices</h1>
+        <a href="{{ url_for('gold') }}" class="btn btn-secondary">
+            <i class="bi bi-chevron-left me-1"></i> Back to Gold
+        </a>
+    </div>
+
+    <div class="row">
+        <!-- Manual Entry Column -->
+        <div class="col-lg-4">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Manual Price Entry (24K)</h5>
+                </div>
+                <div class="card-body">
+                    <form action="{{ url_for('add_gold_price') }}" method="POST">
+                        <div class="mb-3">
+                            <label for="date" class="form-label">Date</label>
+                            <input type="date" class="form-control" id="date" name="date" max="{{ today_str }}" required>
+                        </div>
+                        <div class="mb-3">
+                            <label for="price_per_gram_24k" class="form-label">Price per Gram (24K)</label>
+                            <input type="number" step="0.01" class="form-control" id="price_per_gram_24k" name="price_per_gram_24k" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Save Price</button>
+                    </form>
+                </div>
+            </div>
+            
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5 class="mb-0">Auto-Fetch Prices</h5>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted">
+                        Fetches the last 30 days of 22K gold prices (10g) from Tanishq, converts them to 24K (1g), and updates your database.
+                    </p>
+                    <form action="{{ url_for('fetch_gold_prices') }}" method="POST" onsubmit="this.btn.disabled=true; this.btn.innerHTML='<span class=\'spinner-border spinner-border-sm\' role=\'status\' aria-hidden=\'true\'></span> Fetching...';">
+                        <button type="submit" name="btn" class="btn btn-success w-100">
+                            <i class="bi bi-download me-1"></i> Fetch Prices Now
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Price List Column -->
+        <div class="col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <h5 class="mb-0">Current Price History</h5>
+                </div>
+                <div class="card-body" style="max-height: 600px; overflow-y: auto;">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-hover">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Price / Gram (24K)</th>
+                                    <th>Source</th>
+                                    <!-- --- MODIFIED: Added Actions header --- -->
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for price in prices %}
+                                <tr>
+                                    <td>{{ price.date.strftime('%Y-%m-%d') }}</td>
+                                    <td>₹{{ "%.2f"|format(price.price_per_gram_24k) }}</td>
+                                    <td><span class="badge bg-secondary">{{ price.source }}</span></td>
+                                    <!-- --- MODIFIED: Added Delete button form --- -->
+                                    <td>
+                                        <form action="{{ url_for('delete_gold_price', price_id=price.id) }}" method="POST" class="d-inline" onsubmit="return confirm('Are you sure you want to delete this price entry?');">
+                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </form>
+                                    </td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <!-- --- MODIFIED: Colspan updated to 4 --- -->
+                                    <td colspan="4" class="text-center text-muted">No price data found.</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
