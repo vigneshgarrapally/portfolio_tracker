@@ -36,32 +36,61 @@
     </div>
 </div>
 
+<!-- --- Updated Summary Cards --- -->
 <div class="row mb-4">
-    <div class="col-md-3">
+    <div class="col-md-4 mb-3">
         <div class="card text-center">
             <div class="card-header">Current Holdings</div>
             <div class="card-body">{{ "%.4f"|format(summary.current_holdings) }} gm</div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-4 mb-3">
         <div class="card text-center">
             <div class="card-header">Total Invested Value</div>
             <div class="card-body">₹{{ "%.2f"|format(summary.total_investment) }}</div>
         </div>
     </div>
-    <div class="col-md-3">
+    <div class="col-md-4 mb-3">
         <div class="card text-center">
-            <div class="card-header">Average Buy Price</div>
-            <div class="card-body">₹{{ "%.2f"|format(summary.average_price) }} /gm</div>
-        </div>
-    </div>
-    <div class="col-md-3">
-        <div class="card text-center">
-            <div class="card-header">Current Value</div>
-            <div class="card-body text-muted">₹0.00 (TBD)</div>
+            <div class="card-header">Current Value
+                {% if summary.latest_price_date %}
+                <span class="badge bg-secondary ms-1">As of {{ summary.latest_price_date.strftime('%d-%b-%Y') }}</span>
+                {% endif %}
+            </div>
+            <div class="card-body {% if summary.current_value <= 0 %}text-muted{% endif %}">
+                ₹{{ "%.2f"|format(summary.current_value) }}
+            </div>
         </div>
     </div>
 </div>
+<div class="row mb-4">
+    <div class="col-md-4 mb-3">
+        <div class="card text-center">
+            <div class="card-header">Absolute Profit</div>
+            <div class="card-body {% if summary.absolute_profit > 0 %}text-success{% elif summary.absolute_profit < 0 %}text-danger{% endif %}">
+                ₹{{ "%.2f"|format(summary.absolute_profit) }}
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-3">
+        <div class="card text-center">
+            <div class="card-header">Absolute Return</div>
+            <div class="card-body {% if summary.absolute_return > 0 %}text-success{% elif summary.absolute_return < 0 %}text-danger{% endif %}">
+                {{ "%.2f"|format(summary.absolute_return) }} %
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4 mb-3">
+        <div class="card text-center">
+            <div class="card-header">XIRR</div>
+            <div class="card-body {% if summary.xirr > 0 %}text-success{% elif summary.xirr < 0 %}text-danger{% endif %}">
+                {{ "%.2f"|format(summary.xirr) }} %
+            </div>
+        </div>
+    </div>
+</div>
+<!-- ----------------------------- -->
+
 
 <h4 class="mt-4">Gold Holdings</h4>
 <div class="card">
@@ -83,11 +112,11 @@
                 </thead>
                 <tbody>
                     {% for tx in buy_transactions %}
-                    <tr class="{{ 'table-secondary text-muted' if tx.remaining_grams <= 0 else '' }}">
+                    <tr class="align-middle {{ 'table-secondary text-muted' if tx.remaining_grams <= 0 else '' }}">
                         <td>{{ tx.invoice_date.strftime('%Y-%m-%d') }}</td>
                         <td>{{ tx.user.name }}</td>
                         <td>{{ tx.type }}</td>
-                        <td>{{ "%.2f"|format(tx.grams) }}</td>
+                        <td>{{ "%.4f"|format(tx.grams) }}</td>
                         <td>{{ "%.2f"|format(tx.per_gm_price) }}</td>
                         <td>{{ tx.purity or 'N/A' }}</td>
                         <td>{{ tx.platform or 'N/A' }}</td>

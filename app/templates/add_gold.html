@@ -13,7 +13,7 @@
             <button class="nav-link active" id="manual-tab" data-bs-toggle="tab" data-bs-target="#manual" type="button" role="tab" aria-controls="manual" aria-selected="true">Add Manually</button>
         </li>
         <li class="nav-item" role="presentation">
-            <button class="nav-link" id="json-tab" data-bs-toggle="tab" data-bs-target="#json" type="button" role="tab" aria-controls="json" aria-selected="false">Upload JSON</button>
+            <button class="nav-link" id="csv-tab" data-bs-toggle="tab" data-bs-target="#csv" type="button" role="tab" aria-controls="csv" aria-selected="false">Upload CSV</button>
         </li>
     </ul>
 
@@ -26,7 +26,7 @@
                         <label for="user_id" class="form-label">User</label>
                         <select class="form-select" id="user_id" name="user_id" required>
                             {% for user in users %}
-                            <option value="{{ user.id }}">{{ user.name }}</option>
+                            <option value="{{ user.id }}">{{ user.name }}({{ user.id }})</option>
                             {% endfor %}
                         </select>
                     </div>
@@ -100,20 +100,21 @@
             </form>
         </div>
         
-        <div class="tab-pane fade p-3" id="json" role="tabpanel" aria-labelledby="json-tab">
-            <form action="{{ url_for('upload_gold_json') }}" method="POST" enctype="multipart/form-data">
+        <div class="tab-pane fade p-3" id="csv" role="tabpanel" aria-labelledby="csv-tab">
+            <form action="{{ url_for('upload_gold_csv') }}" method="POST" enctype="multipart/form-data">
                 <div class="mb-3">
-                    <label for="file" class="form-label">Upload JSON File</label>
-                    <input class="form-control" type="file" id="file" name="file" accept=".json" required>
+                    <label for="file" class="form-label">Upload CSV File</label>
+                    <input class="form-control" type="file" id="file" name="file" accept=".csv" required>
                 </div>
                 <p class="form-text">
-                    JSON file should be an array of objects. Each object must contain:
-                    <code>user_id</code> (integer),
-                    <code>invoice_date</code> (string "YYYY-MM-DD"),
-                    <code>grams</code> (number),
-                    <code>per_gm_price</code> (number).
+                    CSV file must contain a header row. Required columns:
+                    <code>user_id</code>,
+                    <code>invoice_date</code> (YYYY-MM-DD),
+                    <code>grams</code>,
+                    <code>per_gm_price</code>,
+                    <code>type</code>.
                     <br>
-                    Optional fields: <code>purity</code> (18K, 22K, 24K), <code>platform</code>, <code>type</code>, <code>brand</code>, <code>notes</code>.
+                    Optional columns: <code>purity</code> (18K, 22K, 24K), <code>platform</code>, <code>brand</code>, <code>notes</code>.
                 </p>
                 <button type="submit" class="btn btn-primary">Upload and Process</button>
             </form>

@@ -1,9 +1,13 @@
-import json
+import csv
+import io
 from flask import render_template, request, redirect, url_for, flash
 from app import app, db
 from app.models import User, GoldTransaction, GoldSellTransaction, GoldPrice
 from datetime import datetime, date
 from decimal import Decimal
+from markupsafe import Markup
+
+from app.utils import calculate_xirr
 
 
 from selenium import webdriver
@@ -116,32 +120,43 @@ def gold():
     user_id = request.args.get("user_id", type=int)
     all_users = User.query.order_by(User.name).all()
 
+    # --- Base Queries ---
     buy_query = GoldTransaction.query
+    sell_query = GoldSellTransaction.query
 
     if user_id:
         buy_query = buy_query.filter_by(user_id=user_id)
+        sell_query = sell_query.filter_by(user_id=user_id)
 
-    # --- Only query for holdings (Buy Transactions) ---
+    # --- Get all transactions for cash flow calculation ---
     buy_transactions = buy_query.order_by(
         GoldTransaction.invoice_date.desc()
     ).all()
+    sell_transactions = sell_query.all()
 
-    # --- Summary stats are still calculated from totals ---
+    # --- Fix for SAWarning: Use .c attribute from subquery ---
+    buy_subquery = buy_query.subquery()
+    sell_subquery = sell_query.subquery()
+
     total_buy_grams = db.session.query(
-        db.func.sum(GoldTransaction.grams)
-    ).select_from(buy_query.subquery()).scalar() or Decimal("0.0")
+        db.func.sum(buy_subquery.c.grams)
+    ).scalar() or Decimal("0.0")
+
     total_investment = db.session.query(
-        db.func.sum(GoldTransaction.grams * GoldTransaction.per_gm_price)
-    ).select_from(buy_query.subquery()).scalar() or Decimal("0.0")
+        db.func.sum(buy_subquery.c.grams * buy_subquery.c.per_gm_price)
+    ).scalar() or Decimal("0.0")
 
-    # Get total sell grams *for the filtered user*
-    sell_query = GoldSellTransaction.query
-    if user_id:
-        sell_query = sell_query.filter_by(user_id=user_id)
     total_sell_grams = db.session.query(
-        db.func.sum(GoldSellTransaction.grams)
-    ).select_from(sell_query.subquery()).scalar() or Decimal("0.0")
+        db.func.sum(sell_subquery.c.grams)
+    ).scalar() or Decimal("0.0")
 
+    total_sell_value = db.session.query(
+        db.func.sum(
+            sell_subquery.c.grams * sell_subquery.c.sell_price_per_gram
+        )
+    ).scalar() or Decimal("0.0")
+
+    # --- New Calculations ---
     current_holdings = total_buy_grams - total_sell_grams
     average_price = (
         (total_investment / total_buy_grams)
@@ -149,11 +164,55 @@ def gold():
         else Decimal("0.0")
     )
 
+    # Get latest price
+    latest_price_entry = GoldPrice.query.order_by(
+        GoldPrice.date.desc()
+    ).first()
+
+    current_value = Decimal("0.0")
+    absolute_profit = Decimal("0.0")
+    absolute_return = Decimal("0.0")
+    xirr = 0.0
+    latest_price_date = None
+
+    if latest_price_entry:
+        latest_price = latest_price_entry.price_per_gram_24k
+        latest_price_date = latest_price_entry.date
+        current_value = current_holdings * latest_price
+
+    # Profit = (Current Value + What you sold for) - What you invested
+    absolute_profit = (current_value + total_sell_value) - total_investment
+
+    if total_investment > 0:
+        absolute_return = (absolute_profit / total_investment) * 100
+
+    # --- XIRR Cash Flow ---
+    cash_flows = []
+    for buy in buy_transactions:
+        # Investment is a negative cash flow
+        cash_flows.append((buy.invoice_date, -(buy.grams * buy.per_gm_price)))
+    for sell in sell_transactions:
+        # Sale is a positive cash flow
+        cash_flows.append(
+            (sell.sell_date, (sell.grams * sell.sell_price_per_gram))
+        )
+
+    # Add current holdings as a final "sale" on today's date
+    if current_holdings > 0 and latest_price_entry:
+        cash_flows.append((date.today(), current_value))
+
+    xirr = calculate_xirr(cash_flows)
+
+    # --- Update Summary ---
     summary = {
         "current_holdings": current_holdings,
         "total_investment": total_investment,
         "average_price": average_price,
-        "current_value": 0,
+        "current_value": current_value,
+        "latest_price_date": latest_price_date,
+        "absolute_profit": absolute_profit,
+        "absolute_return": absolute_return,
+        "xirr": xirr,
     }
 
     return render_template(
@@ -421,9 +480,9 @@ def delete_gold_sell(tx_id):
     return redirect(url_for("view_gold", tx_id=buy_id))
 
 
-@app.route("/gold/upload_json", methods=["POST"])
-def upload_gold_json():
-    """Add gold transactions from a JSON file upload."""
+@app.route("/gold/upload_csv", methods=["POST"])
+def upload_gold_csv():
+    """Add gold transactions from a CSV file upload with validation (All or Nothing)."""
     if "file" not in request.files:
         flash("No file part", "danger")
         return redirect(url_for("add_gold"))
@@ -433,38 +492,191 @@ def upload_gold_json():
         flash("No selected file", "danger")
         return redirect(url_for("add_gold"))
 
-    if file and file.filename.endswith(".json"):
-        try:
-            data = json.load(file.stream)
-            count = 0
-            for item in data:
-                new_tx = GoldTransaction(
-                    user_id=item.get("user_id"),
-                    invoice_date=datetime.strptime(
-                        item.get("invoice_date"), "%Y-%m-%d"
-                    ).date(),
-                    grams=Decimal(item.get("grams")),
-                    per_gm_price=Decimal(item.get("per_gm_price")),
-                    purity=item.get("purity"),
-                    platform=item.get("platform"),
-                    type=item.get("type"),
-                    brand=item.get("brand"),
+    if not file.filename.endswith(".csv"):
+        flash("Invalid file type. Please upload a .csv file.", "danger")
+        return redirect(url_for("add_gold"))
+
+    valid_transactions = []
+    errors = []
+
+    # Pre-fetch valid IDs and values for efficient checking
+    all_user_ids = {user.id for user in User.query.all()}
+    allowed_types = {"Coin", "Jewellery", "SGB", "Digital", "Other"}
+    allowed_purity = {
+        "24K",
+        "22K",
+        "18K",
+        None,
+        "",
+        " ",
+    }  # Allow null/empty string
+
+    try:
+        # Read the file stream as text, handle potential BOM (Byte Order Mark)
+        file_stream = io.StringIO(file.stream.read().decode("utf-8-sig"))
+        csv_reader = csv.DictReader(file_stream)
+
+        # Read all data into a list to check if it's empty
+        data = list(csv_reader)
+        if not data:
+            flash("CSV file is empty or has no data rows.", "info")
+            return redirect(url_for("add_gold"))
+
+        for i, item in enumerate(data):
+            row_num = i + 1
+            item_errors = []
+
+            if not isinstance(item, dict):
+                errors.append(f"Row {row_num}: Invalid CSV data format.")
+                continue
+
+            # --- Validate Fields ---
+            user_id = item.get("user_id")
+            user_id_obj = None
+            if not user_id:
+                item_errors.append("`user_id` is missing.")
+            else:
+                try:
+                    user_id_obj = int(user_id)
+                    if user_id_obj not in all_user_ids:
+                        item_errors.append(
+                            f"User with id {user_id_obj} does not exist."
+                        )
+                except (ValueError, TypeError):
+                    item_errors.append(
+                        f"`user_id` '{user_id}' must be an integer."
+                    )
+
+            date_str = item.get("invoice_date")
+            date_obj = None
+            if not date_str:
+                item_errors.append("`invoice_date` is missing.")
+            else:
+                try:
+                    date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+                except ValueError:
+                    item_errors.append(
+                        "`invoice_date` must be in YYYY-MM-DD format."
+                    )
+
+            grams_val = item.get("grams")
+            grams_obj = None
+            if not grams_val:
+                item_errors.append("`grams` is missing.")
+            else:
+                try:
+                    grams_obj = Decimal(str(grams_val))
+                    if grams_obj <= 0:
+                        item_errors.append("`grams` must be greater than 0.")
+                except Exception:
+                    item_errors.append(
+                        f"`grams` value '{grams_val}' must be a valid number."
+                    )
+
+            price_val = item.get("per_gm_price")
+            price_obj = None
+            if not price_val:
+                item_errors.append("`per_gm_price` is missing.")
+            else:
+                try:
+                    price_obj = Decimal(str(price_val))
+                    if price_obj < 0:
+                        item_errors.append(
+                            "`per_gm_price` cannot be negative."
+                        )
+                except Exception:
+                    item_errors.append(
+                        f"`per_gm_price` value '{price_val}' must be a valid number."
+                    )
+
+            type_val = item.get("type")
+            if not type_val:
+                item_errors.append("`type` is missing.")
+            elif type_val not in allowed_types:
+                item_errors.append(
+                    f"`type` '{type_val}' is invalid. Must be one of: {allowed_types}."
                 )
-                db.session.add(new_tx)
-                count += 1
 
-            db.session.commit()
+            purity_val = item.get("purity")
+            if purity_val not in allowed_purity:
+                item_errors.append(
+                    f"`purity` '{purity_val}' is invalid. Must be one of: {allowed_purity}."
+                )
+
+            # --- Collate errors or create object ---
+            if item_errors:
+                errors.append(
+                    f"Row {row_num} ({date_str or 'No Date'}): {'; '.join(item_errors)}"
+                )
+            else:
+                valid_transactions.append(
+                    GoldTransaction(
+                        user_id=user_id_obj,
+                        invoice_date=date_obj,
+                        grams=grams_obj,
+                        per_gm_price=price_obj,
+                        purity=purity_val
+                        or None,  # Ensure empty strings become None
+                        platform=item.get("platform") or None,
+                        type=type_val,
+                        brand=item.get("brand") or None,
+                        notes=item.get("notes") or None,
+                    )
+                )
+
+        # --- ATOMIC COMMIT: Only commit if there are NO errors ---
+        if errors:
+            db.session.rollback()  # Ensure nothing is committed
             flash(
-                f"Successfully uploaded and added {count} transactions.",
-                "success",
+                f"Upload failed. {len(errors)} transactions had errors. No records were added.",
+                "danger",
             )
-        except Exception as e:
-            db.session.rollback()
-            flash(f"Error processing JSON file: {str(e)}", "danger")
-    else:
-        flash("Invalid file type. Please upload a .json file.", "danger")
+            error_html = (
+                "<ul>"
+                + "".join([f"<li>{e}</li>" for e in errors[:10]])
+                + "</ul>"
+            )
+            if len(errors) > 10:
+                error_html += f"<p>...and {len(errors) - 10} more errors.</p>"
+            flash(Markup(error_html), "danger")
 
-    return redirect(url_for("gold"))
+        elif not valid_transactions:
+            flash(
+                "CSV file was empty or contained no valid transactions.",
+                "info",
+            )
+
+        else:
+            # --- All rows are valid, now we commit ---
+            try:
+                db.session.add_all(valid_transactions)
+                db.session.commit()
+                flash(
+                    f"Successfully uploaded and added {len(valid_transactions)} transactions.",
+                    "success",
+                )
+            except Exception as e:
+                db.session.rollback()
+                flash(
+                    f"An error occurred during the final commit: {str(e)}",
+                    "danger",
+                )
+
+    except csv.Error as e:
+        flash(
+            f"Error parsing CSV file. Please check file format. Error: {e}",
+            "danger",
+        )
+    except UnicodeDecodeError:
+        flash(
+            "Error: Could not decode file. Please ensure it is saved as UTF-8.",
+            "danger",
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f"An unexpected error occurred: {str(e)}", "danger")
+
+    return redirect(url_for("add_gold"))
 
 
 @app.route("/gold/prices")
@@ -591,14 +803,11 @@ def fetch_gold_prices():
                 # --- MODIFIED: New date format %d-%m-%Y ---
                 date_obj = datetime.strptime(date_str, "%d-%m-%Y").date()
 
-                price_22k_10g = Decimal(
+                price_22k_1g = Decimal(
                     price_22k_10g_str.replace("₹", "")
                     .replace(",", "")
                     .strip()
                 )
-
-                # --- MODIFIED: Convert 10g price to 1g price ---
-                price_22k_1g = price_22k_10g / Decimal("10")
 
                 # --- MODIFIED: Convert 22K 1g price to 24K 1g price ---
                 price_24k_1g = (price_22k_1g / Decimal("22")) * Decimal("24")
