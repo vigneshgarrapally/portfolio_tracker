@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">{{ prop.name }}</h1>
+    <a href="{{ url_for('real_estate') }}" class="btn btn-secondary">
+        <i class="bi bi-chevron-left me-1"></i> Back to List
+    </a>
+</div>
+
+{% set cost_basis = prop.total_cost_basis %}
+{% set latest_val = prop.latest_valuation %}
+
+<div class="card mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Financial Summary</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3 text-center">
+                <strong>Total Cost Basis</strong>
+                <p class="h4 mb-0">₹{{ "%.2f"|format(cost_basis) }}</p>
+            </div>
+            <div class="col-md-3 text-center">
+                <strong>Latest Recorded Value</strong>
+                {% if latest_val %}
+                <p class="h4 mb-0">₹{{ "%.2f"|format(latest_val.estimated_value) }}</p>
+                <small class="text-muted">As of {{ latest_val.valuation_date.strftime('%d-%b-%Y') }}</small>
+                {% else %}
+                <p class="h4 mb-0 text-muted">N/A</p>
+                {% endif %}
+            </div>
+            <div class="col-md-3 text-center">
+                {% if prop.sell_date %}
+                    <strong>Realized P&L</strong>
+                    {% set net_sale = (prop.sell_value or 0) - (prop.selling_costs or 0) %}
+                    {% set pnl = net_sale - cost_basis %}
+                    <p class="h4 mb-0 {% if pnl > 0 %}text-success{% elif pnl < 0 %}text-danger{% endif %}">
+                        ₹{{ "%.2f"|format(pnl) }}
+                    </p>
+                {% else %}
+                    <strong>Unrealized P&L</strong>
+                    {% if latest_val %}
+                        {% set pnl = latest_val.estimated_value - cost_basis %}
+                        <p class="h4 mb-0 {% if pnl > 0 %}text-success{% elif pnl < 0 %}text-danger{% endif %}">
+                            ₹{{ "%.2f"|format(pnl) }}
+                        </p>
+                    {% else %}
+                        <p class="h4 mb-0 text-muted">N/A</p>
+                    {% endif %}
+                {% endif %}
+            </div>
+            <div class="col-md-3 text-center">
+                <strong>Property Status</strong>
+                {% if prop.sell_date %}
+                <p class="h4 mb-0 text-danger">SOLD</p>
+                <small class="text-muted">{{ prop.sell_date.strftime('%d-%b-%Y') }}</small>
+                {% else %}
+                <p class="h4 mb-0 text-success">Active</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">Property Details</h5>
+                <a href="{{ url_for('edit_property', prop_id=prop.id) }}"
+                    class="btn btn-sm btn-outline-primary {{ 'disabled' if prop.sell_date else '' }}">
+                    <i class="bi bi-pencil me-1"></i> Edit
+                </a>
+            </div>
+            <div class="card-body">
+                <ul class="list-group list-group-flush">
+                    <li class="list-group-item d-flex justify-content-between"><strong>User:</strong> {{ prop.user.name
+                        }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Type:</strong> {{
+                        prop.property_type }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>City:</strong> {{ prop.city or
+                        'N/A' }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Address:</strong> {{ prop.address
+                        or 'N/A' }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Area:</strong> {{ prop.area }} {{
+                        prop.area_unit }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Purchase Date:</strong> {{
+                        prop.purchase_date.strftime('%d-%b-%Y') }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Purchase Value:</strong> ₹{{
+                        "%.2f"|format(prop.purchase_value) }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Registration Cost:</strong> ₹{{
+                        "%.2f"|format(prop.registration_cost) }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Other Costs:</strong> ₹{{
+                        "%.2f"|format(prop.other_costs) }}</li>
+                    <li class="list-group-item"><strong>Notes:</strong> {{ prop.notes or 'N/A' }}</li>
+                </ul>
+            </div>
+        </div>
+
+<div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Sell Property</h5>
+            </div>
+            <div class="card-body">
+                {% if prop.sell_date %}
+                <h5 class="text-danger">Property Sold on {{ prop.sell_date.strftime('%d-%b-%Y') }}</h5>
+                {% set net_sale = (prop.sell_value or 0) - (prop.selling_costs or 0) %}
+                {% set pnl = net_sale - cost_basis %}
+                <ul class="list-group list-group-flush mb-3">
+                    <li class="list-group-item d-flex justify-content-between"><strong>Sell Value:</strong> ₹{{
+                        "%.2f"|format(prop.sell_value) }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Selling Costs:</strong> ₹{{
+                        "%.2f"|format(prop.selling_costs) }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Net Sale Value:</strong> ₹{{
+                        "%.2f"|format(net_sale) }}</li>
+                    <li class="list-group-item d-flex justify-content-between"><strong>Realized P&L:</strong>
+                        <strong class="{% if pnl > 0 %}text-success{% elif pnl < 0 %}text-danger{% endif %}">
+                            ₹{{ "%.2f"|format(pnl) }}
+                        </strong>
+                    </li>
+                </ul>
+                <form action="{{ url_for('unmark_sold_property', prop_id=prop.id) }}" method="POST">
+                    <button type="submit" class="btn btn-warning"
+                        onclick="return confirm('Are you sure you want to mark this property as unsold? This will clear the selling details.');">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i> Mark as Unsold
+                    </button>
+                </form>
+                {% else %}
+                <form action="{{ url_for('sell_property', prop_id=prop.id) }}" method="POST">
+                    <div class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="sell_date" class="form-label">Sell Date</label>
+                            <input type="date" class="form-control" id="sell_date" name="sell_date" required>
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="sell_value" class="form-label">Sell Value (₹)</label>
+                            <input type="number" step="0.01" class="form-control" id="sell_value" name="sell_value"
+                                required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="selling_costs" class="form-label">Selling Costs (₹)</label>
+                        <input type="number" step="0.01" class="form-control" id="selling_costs" name="selling_costs"
+                            value="0">
+                    </div>
+                    <button type="submit" class="btn btn-danger"
+                        onclick="return confirm('Are you sure you want to mark this property as sold?');">Sell
+                        Property</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Valuations</h5>
+            </div>
+            <div class="card-body">
+                {% if not prop.sell_date %}
+                <form action="{{ url_for('add_valuation', prop_id=prop.id) }}" method="POST" class="mb-3">
+                    <div class="row g-2">
+                        <div class="col-4">
+                            <input type="date" class="form-control" name="valuation_date" required>
+                        </div>
+                        <div class="col-4">
+                            <input type="number" step="0.01" class="form-control" name="estimated_value"
+                                placeholder="Value (₹)" required>
+                        </div>
+                        <div class="col-4">
+                            <input type="text" class="form-control" name="source" placeholder="Source">
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm mt-2">Add Valuation</button>
+                </form>
+                {% else %}
+                <p class="text-muted fst-italic">Cannot add valuations to a sold property.</p>
+                {% endif %}
+                <table class="table table-sm table-striped">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Value</th>
+                            <th>Source</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for val in valuations %}
+                        <tr>
+                            <td>{{ val.valuation_date.strftime('%d-%b-%Y') }}</td>
+                            <td>₹{{ "%.2f"|format(val.estimated_value) }}</td>
+                            <td>{{ val.source or 'N/A' }}</td>
+                            <td>
+                                <form action="{{ url_for('delete_valuation', val_id=val.id) }}" method="POST"
+                                    class="d-inline">
+                                    <button type="submit"
+                                        class="btn btn-sm btn-outline-danger {{ 'disabled' if prop.sell_date else '' }}"
+                                        title="Delete"><i class="bi bi-trash"></i></button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="4" class="text-center text-muted">No valuations recorded.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="mb-0">Expenses & Improvements</h5>
+            </div>
+            <div class="card-body">
+                {% if not prop.sell_date %}
+                <form action="{{ url_for('add_expense', prop_id=prop.id) }}" method="POST" class="mb-3">
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Date</label>
+                            <input type="date" class="form-control" name="expense_date" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Amount (₹)</label>
+                            <input type="number" step="0.01" class="form-control" name="amount" required>
+                        </div>
+                    </div>
+                    <div class="row g-2 mb-2">
+                        <div class="col-md-6">
+                            <label class="form-label">Type</label>
+                            <select class="form-select" name="expense_type" required>
+                                <option value="Maintenance">Maintenance</option>
+                                <option value="Property Tax">Property Tax</option>
+                                <option value="Renovation">Renovation</option>
+                                <option value="Utility">Utility</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Description</label>
+                            <input type="text" class="form-control" name="description">
+                        </div>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input class="form-check-input" type="checkbox" name="is_capital_improvement"
+                            id="is_capital_improvement">
+                        <label class="form-check-label" for="is_capital_improvement">
+                            This is a Capital Improvement (adds to cost basis)
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-sm">Add Expense</button>
+                </form>
+                {% else %}
+                <p class="text-muted fst-italic">Cannot add expenses to a sold property.</p>
+                {% endif %}
+                <table class="table table-sm table-striped">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>Capital</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for exp in expenses %}
+                        <tr>
+                            <td>{{ exp.expense_date.strftime('%d-%b-%Y') }}</td>
+                            <td>{{ exp.expense_type }}</td>
+                            <td>₹{{ "%.2f"|format(exp.amount) }}</td>
+                            <td>{% if exp.is_capital_improvement %}<i
+                                    class="bi bi-check-circle-fill text-success"></i>{% else %}<i
+                                    class="bi bi-x-circle text-muted"></i>{% endif %}</td>
+                            <td>
+                                <form action="{{ url_for('delete_expense', exp_id=exp.id) }}" method="POST"
+                                    class="d-inline">
+                                    <button type="submit"
+                                        class="btn btn-sm btn-outline-danger {{ 'disabled' if prop.sell_date else '' }}"
+                                        title="Delete"><i class="bi bi-trash"></i></button>
+                                </form>
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted">No expenses recorded.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

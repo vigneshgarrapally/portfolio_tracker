@@ -34,6 +34,12 @@ class User(db.Model):
         lazy=True,
         cascade="all, delete-orphan",
     )
+    properties = db.relationship(
+        "Property",
+        back_populates="user",
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self):
         return f"User('{self.name}', '{self.email}')"
@@ -149,3 +155,149 @@ class GoldPrice(db.Model):
 
     def __repr__(self):
         return f"GoldPrice({self.date}, {self.price_per_gram_24k})"
+
+
+class Property(db.Model):
+    """
+    Model for a single real estate property holding.
+    """
+
+    __tablename__ = "properties"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    name = db.Column(db.String(255), nullable=False)
+    property_type = db.Column(db.String(50), nullable=False)
+    address = db.Column(db.Text, nullable=True)
+    city = db.Column(db.String(100), nullable=True)
+    area = db.Column(db.Numeric(10, 2), nullable=True)
+    area_unit = db.Column(db.String(20), nullable=True)
+    purchase_date = db.Column(db.Date, nullable=False)
+    purchase_value = db.Column(db.Numeric(14, 2), nullable=False)
+    registration_cost = db.Column(db.Numeric(14, 2), nullable=True, default=0)
+    other_costs = db.Column(db.Numeric(14, 2), nullable=True, default=0)
+    notes = db.Column(db.Text, nullable=True)
+    sell_date = db.Column(db.Date, nullable=True)
+    sell_value = db.Column(db.Numeric(14, 2), nullable=True)
+    selling_costs = db.Column(db.Numeric(14, 2), nullable=True, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(
+        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    user = db.relationship("User", back_populates="properties")
+    valuations = db.relationship(
+        "PropertyValuation",
+        back_populates="property",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
+    expenses = db.relationship(
+        "PropertyExpense",
+        back_populates="property",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "purchase_value >= 0",
+            name="check_property_purchase_value_non_negative",
+        ),
+        CheckConstraint("area > 0", name="check_property_area_positive"),
+    )
+
+    # --- Helper Properties ---
+    @property
+    def total_purchase_cost(self):
+        """Initial cost to acquire the property."""
+        return (
+            self.purchase_value
+            + (self.registration_cost or 0)
+            + (self.other_costs or 0)
+        )
+
+    @property
+    def total_capital_improvements(self):
+        """Total cost of renovations/improvements."""
+        total = (
+            db.session.query(db.func.sum(PropertyExpense.amount))
+            .filter_by(property_id=self.id, is_capital_improvement=True)
+            .scalar()
+        )
+        return total or Decimal("0.0")
+
+    @property
+    def total_cost_basis(self):
+        """Full cost basis for P&L calculation."""
+        return self.total_purchase_cost + self.total_capital_improvements
+
+    @property
+    def latest_valuation(self):
+        """Get the most recent valuation entry."""
+        return self.valuations.order_by(
+            PropertyValuation.valuation_date.desc()
+        ).first()
+
+    def __repr__(self):
+        return f"<Property(Name: '{self.name}', User: {self.user_id})>"
+
+
+class PropertyValuation(db.Model):
+    """
+    Model for manually recording the estimated value of a property over time.
+    """
+
+    __tablename__ = "property_valuations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    property_id = db.Column(
+        db.Integer, db.ForeignKey("properties.id"), nullable=False
+    )
+    valuation_date = db.Column(db.Date, nullable=False)
+    estimated_value = db.Column(db.Numeric(14, 2), nullable=False)
+    source = db.Column(db.String(100), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    property = db.relationship("Property", back_populates="valuations")
+
+    __table_args__ = (
+        CheckConstraint(
+            "estimated_value >= 0", name="check_valuation_value_non_negative"
+        ),
+    )
+
+    def __repr__(self):
+        return f"<PropertyValuation(Property: {self.property_id}, Date: {self.valuation_date}, Value: {self.estimated_value})>"
+
+
+class PropertyExpense(db.Model):
+    """
+    Model for tracking expenses and capital improvements for a property.
+    """
+
+    __tablename__ = "property_expenses"
+
+    id = db.Column(db.Integer, primary_key=True)
+    property_id = db.Column(
+        db.Integer, db.ForeignKey("properties.id"), nullable=False
+    )
+    expense_date = db.Column(db.Date, nullable=False)
+    amount = db.Column(db.Numeric(10, 2), nullable=False)
+    expense_type = db.Column(
+        db.String(50), nullable=False
+    )  # 'Maintenance', 'Property Tax', 'Renovation', 'Utility'
+    description = db.Column(db.Text, nullable=True)
+    is_capital_improvement = db.Column(
+        db.Boolean, nullable=False, default=False
+    )
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    property = db.relationship("Property", back_populates="expenses")
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="check_expense_amount_positive"),
+    )
+
+    def __repr__(self):
+        return f"<PropertyExpense(Property: {self.property_id}, Type: {self.expense_type}, Amount: {self.amount})>"

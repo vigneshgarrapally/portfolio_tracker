@@ -2,7 +2,15 @@ import csv
 import io
 from flask import render_template, request, redirect, url_for, flash
 from app import app, db
-from app.models import User, GoldTransaction, GoldSellTransaction, GoldPrice
+from app.models import (
+    User,
+    GoldTransaction,
+    GoldSellTransaction,
+    GoldPrice,
+    Property,
+    PropertyValuation,
+    PropertyExpense,
+)
 from datetime import datetime, date
 from decimal import Decimal
 from markupsafe import Markup
@@ -879,3 +887,304 @@ def delete_gold_price(price_id):
         flash(f"Error deleting price: {str(e)}", "danger")
 
     return redirect(url_for("gold_prices"))
+
+
+@app.route("/real_estate")
+def real_estate():
+    """Display the real estate dashboard."""
+    user_id = request.args.get("user_id", type=int)
+    all_users = User.query.order_by(User.name).all()
+
+    prop_query = Property.query
+    if user_id:
+        prop_query = prop_query.filter_by(user_id=user_id)
+
+    # Separate properties into unsold and sold
+    unsold_properties = (
+        prop_query.filter(Property.sell_date == None)
+        .order_by(Property.purchase_date.desc())
+        .all()
+    )
+    sold_properties = (
+        prop_query.filter(Property.sell_date != None)
+        .order_by(Property.sell_date.desc())
+        .all()
+    )
+
+    # --- Summary Calculations ---
+    total_investment = Decimal("0.0")
+    total_current_value = Decimal("0.0")
+    total_realized_pnl = Decimal("0.0")
+
+    for prop in unsold_properties:
+        total_investment += prop.total_cost_basis
+        latest_val = prop.latest_valuation
+        if latest_val:
+            total_current_value += latest_val.estimated_value
+
+    for prop in sold_properties:
+        # total_investment += prop.total_cost_basis
+        net_sale = (prop.sell_value or 0) - (prop.selling_costs or 0)
+        total_realized_pnl += net_sale - prop.total_cost_basis
+
+    summary = {
+        "total_investment": total_investment,
+        "total_current_value": total_current_value,
+        "unrealized_pnl": (
+            total_current_value - total_investment
+            if total_investment > 0
+            else Decimal("0.0")
+        ),
+        "realized_pnl": total_realized_pnl,
+    }
+
+    return render_template(
+        "real_estate.html",
+        unsold_properties=unsold_properties,
+        sold_properties=sold_properties,
+        summary=summary,
+        all_users=all_users,
+        selected_user_id=user_id,
+    )
+
+
+@app.route("/real_estate/add", methods=["GET", "POST"])
+def add_property():
+    """Add a new real estate property."""
+    if request.method == "POST":
+        try:
+            new_prop = Property(
+                user_id=request.form.get("user_id"),
+                name=request.form.get("name"),
+                property_type=request.form.get("property_type"),
+                address=request.form.get("address"),
+                city=request.form.get("city"),
+                area=Decimal(request.form.get("area")),
+                area_unit=request.form.get("area_unit"),
+                purchase_date=datetime.strptime(
+                    request.form.get("purchase_date"), "%Y-%m-%d"
+                ).date(),
+                purchase_value=Decimal(request.form.get("purchase_value")),
+                registration_cost=Decimal(
+                    request.form.get("registration_cost") or 0
+                ),
+                other_costs=Decimal(request.form.get("other_costs") or 0),
+                notes=request.form.get("notes"),
+            )
+            db.session.add(new_prop)
+            db.session.commit()
+            flash(
+                f'Property "{new_prop.name}" added successfully!', "success"
+            )
+            return redirect(url_for("real_estate"))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error adding property: {str(e)}", "danger")
+
+    users = User.query.all()
+    if not users:
+        flash("You must add a User before you can add assets.", "warning")
+        return redirect(url_for("add_user"))
+
+    return render_template("add_property.html", users=users)
+
+
+@app.route("/real_estate/view/<int:prop_id>")
+def view_property(prop_id):
+    """View details, valuations, and expenses for a single property."""
+    prop = Property.query.get_or_404(prop_id)
+
+    # --- This is the fix ---
+    # Query the dynamic relationships and apply sorting here, in Python
+    valuations = prop.valuations.order_by(
+        PropertyValuation.valuation_date.desc()
+    ).all()
+    expenses = prop.expenses.order_by(
+        PropertyExpense.expense_date.desc()
+    ).all()
+
+    return render_template(
+        "view_property.html",
+        prop=prop,
+        valuations=valuations,  # Pass the sorted list
+        expenses=expenses,  # Pass the sorted list
+    )
+
+
+@app.route("/real_estate/edit/<int:prop_id>", methods=["GET", "POST"])
+def edit_property(prop_id):
+    """Edit an existing property's core details."""
+    prop = Property.query.get_or_404(prop_id)
+
+    if request.method == "POST":
+        try:
+            prop.user_id = request.form.get("user_id")
+            prop.name = request.form.get("name")
+            prop.property_type = request.form.get("property_type")
+            prop.address = request.form.get("address")
+            prop.city = request.form.get("city")
+            prop.area = Decimal(request.form.get("area"))
+            prop.area_unit = request.form.get("area_unit")
+            prop.purchase_date = datetime.strptime(
+                request.form.get("purchase_date"), "%Y-%m-%d"
+            ).date()
+            prop.purchase_value = Decimal(request.form.get("purchase_value"))
+            prop.registration_cost = Decimal(
+                request.form.get("registration_cost") or 0
+            )
+            prop.other_costs = Decimal(request.form.get("other_costs") or 0)
+            prop.notes = request.form.get("notes")
+            prop.updated_at = datetime.utcnow()
+
+            db.session.commit()
+            flash(f'Property "{prop.name}" updated successfully!', "success")
+            return redirect(url_for("view_property", prop_id=prop_id))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error updating property: {str(e)}", "danger")
+
+    users = User.query.all()
+    return render_template("edit_property.html", prop=prop, users=users)
+
+
+@app.route("/real_estate/delete/<int:prop_id>", methods=["POST"])
+def delete_property(prop_id):
+    """Delete a property and all its related data."""
+    prop = Property.query.get_or_404(prop_id)
+    try:
+        db.session.delete(prop)
+        db.session.commit()
+        flash(f'Property "{prop.name}" deleted successfully.', "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting property: {str(e)}", "danger")
+    return redirect(url_for("real_estate"))
+
+
+@app.route("/real_estate/sell/<int:prop_id>", methods=["POST"])
+def sell_property(prop_id):
+    """Mark a property as sold."""
+    prop = Property.query.get_or_404(prop_id)
+    try:
+        sell_date = datetime.strptime(
+            request.form.get("sell_date"), "%Y-%m-%d"
+        ).date()
+        sell_value = Decimal(request.form.get("sell_value"))
+        selling_costs = Decimal(request.form.get("selling_costs") or 0)
+
+        if sell_date < prop.purchase_date:
+            flash("Sell date cannot be before purchase date.", "danger")
+            return redirect(url_for("view_property", prop_id=prop_id))
+
+        prop.sell_date = sell_date
+        prop.sell_value = sell_value
+        prop.selling_costs = selling_costs
+        prop.updated_at = datetime.utcnow()
+
+        db.session.commit()
+        flash(f'Property "{prop.name}" marked as sold!', "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error selling property: {str(e)}", "danger")
+
+    return redirect(url_for("view_property", prop_id=prop_id))
+
+
+# --- Valuation and Expense Routes ---
+
+
+@app.route("/real_estate/valuation/add/<int:prop_id>", methods=["POST"])
+def add_valuation(prop_id):
+    """Add a new valuation entry for a property."""
+    prop = Property.query.get_or_404(prop_id)
+    try:
+        new_val = PropertyValuation(
+            property_id=prop_id,
+            valuation_date=datetime.strptime(
+                request.form.get("valuation_date"), "%Y-%m-%d"
+            ).date(),
+            estimated_value=Decimal(request.form.get("estimated_value")),
+            source=request.form.get("source"),
+        )
+        db.session.add(new_val)
+        db.session.commit()
+        flash("New valuation added successfully.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error adding valuation: {str(e)}", "danger")
+    return redirect(url_for("view_property", prop_id=prop_id))
+
+
+@app.route("/real_estate/valuation/delete/<int:val_id>", methods=["POST"])
+def delete_valuation(val_id):
+    """Delete a valuation entry."""
+    val = PropertyValuation.query.get_or_404(val_id)
+    prop_id = val.property_id
+    try:
+        db.session.delete(val)
+        db.session.commit()
+        flash("Valuation entry deleted.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting valuation: {str(e)}", "danger")
+    return redirect(url_for("view_property", prop_id=prop_id))
+
+
+@app.route("/real_estate/expense/add/<int:prop_id>", methods=["POST"])
+def add_expense(prop_id):
+    """Add a new expense entry for a property."""
+    prop = Property.query.get_or_404(prop_id)
+    try:
+        is_capital = request.form.get("is_capital_improvement") == "on"
+
+        new_exp = PropertyExpense(
+            property_id=prop_id,
+            expense_date=datetime.strptime(
+                request.form.get("expense_date"), "%Y-%m-%d"
+            ).date(),
+            amount=Decimal(request.form.get("amount")),
+            expense_type=request.form.get("expense_type"),
+            description=request.form.get("description"),
+            is_capital_improvement=is_capital,
+        )
+        db.session.add(new_exp)
+        db.session.commit()
+        flash("New expense added successfully.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error adding expense: {str(e)}", "danger")
+    return redirect(url_for("view_property", prop_id=prop_id))
+
+
+@app.route("/real_estate/expense/delete/<int:exp_id>", methods=["POST"])
+def delete_expense(exp_id):
+    """Delete an expense entry."""
+    exp = PropertyExpense.query.get_or_404(exp_id)
+    prop_id = exp.property_id
+    try:
+        db.session.delete(exp)
+        db.session.commit()
+        flash("Expense entry deleted.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting expense: {str(e)}", "danger")
+    return redirect(url_for("view_property", prop_id=prop_id))
+
+
+@app.route("/real_estate/unmark_sold/<int:prop_id>", methods=["POST"])
+def unmark_sold_property(prop_id):
+    """Mark a property as unsold by setting sell details to NULL."""
+    prop = Property.query.get_or_404(prop_id)
+    try:
+        prop.sell_date = None
+        prop.sell_value = None
+        prop.selling_costs = None
+        prop.updated_at = datetime.utcnow()
+
+        db.session.commit()
+        flash(f'Property "{prop.name}" marked as unsold.', "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error marking property as unsold: {str(e)}", "danger")
+
+    return redirect(url_for("view_property", prop_id=prop_id))
