@@ -2,6 +2,7 @@ import csv
 import io
 import json
 import hashlib
+import requests
 from flask import render_template, request, redirect, url_for, flash
 from app import app, db
 from app.models import (
@@ -18,9 +19,10 @@ from app.models import (
     MutualFundNAV,
 )
 from datetime import datetime, date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from markupsafe import Markup
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, cast, TEXT
 from casparser import read_cas_pdf
 from app.utils import calculate_xirr
 
@@ -1880,3 +1882,155 @@ def upload_cas():
     # GET request
     users = User.query.order_by(User.name).all()
     return render_template("upload_cas.html", users=users)
+
+
+@app.route("/mutual_funds/fetch_navs", methods=["POST"])
+def fetch_all_navs():
+    """Fetch historical NAVs for all schemes with AMFI codes."""
+
+    schemes_to_fetch = MutualFundScheme.query.filter(
+        MutualFundScheme.amfi_code != None
+    ).all()
+
+    if not schemes_to_fetch:
+        flash(
+            "No schemes with AMFI codes found in the database to fetch NAVs for.",
+            "info",
+        )
+        return redirect(url_for("mutual_funds"))
+
+    schemes_processed = 0
+    new_navs_added_count = 0
+    schemes_failed = []
+
+    # --- FIX: Use string_agg for PostgreSQL ---
+    existing_nav_dates = (
+        db.session.query(
+            MutualFundNAV.scheme_id,
+            # Cast date to TEXT/VARCHAR before aggregating
+            func.string_agg(
+                cast(MutualFundNAV.nav_date, TEXT).distinct(), ","
+            ).label("dates_str"),
+        )
+        .group_by(MutualFundNAV.scheme_id)
+        .all()
+    )
+    # ----------------------------------------
+
+    existing_nav_map = {}
+    for scheme_id, dates_str in existing_nav_dates:
+        if dates_str:
+            try:
+                # Date format from DB/cast should be YYYY-MM-DD
+                existing_nav_map[scheme_id] = {
+                    datetime.strptime(d.strip(), "%Y-%m-%d").date()
+                    for d in dates_str.split(",")
+                }
+            except ValueError:
+                print(
+                    f"Warning: Could not parse dates '{dates_str}' for scheme_id {scheme_id}"
+                )
+                existing_nav_map[scheme_id] = set()
+
+    navs_to_add = []
+
+    for scheme in schemes_to_fetch:
+        api_url = f"https://api.mfapi.in/mf/{scheme.amfi_code}"
+        try:
+            response = requests.get(api_url, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if (
+                not data
+                or data.get("status") != "SUCCESS"
+                or "data" not in data
+            ):
+                schemes_failed.append(
+                    f"{scheme.name} (AMFI: {scheme.amfi_code}) - Invalid API response"
+                )
+                continue
+
+            scheme_existing_dates = existing_nav_map.get(scheme.id, set())
+
+            for nav_entry in data["data"]:
+                try:
+                    nav_date_str = nav_entry.get("date")
+                    nav_value_str = nav_entry.get("nav")
+                    nav_date = datetime.strptime(
+                        nav_date_str, "%d-%m-%Y"
+                    ).date()  # API format
+                    nav_value = Decimal(str(nav_value_str))
+
+                    if nav_date not in scheme_existing_dates:
+                        if nav_value > 0:
+                            navs_to_add.append(
+                                MutualFundNAV(
+                                    scheme_id=scheme.id,
+                                    nav_date=nav_date,
+                                    nav=nav_value,
+                                )
+                            )
+                            scheme_existing_dates.add(
+                                nav_date
+                            )  # Add locally to prevent duplicates in batch
+                            new_navs_added_count += 1
+
+                except (
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    InvalidOperation,
+                ) as e:
+                    print(
+                        f"Warning: Skipping NAV entry for {scheme.name} due to data error: {e} - Data: {nav_entry}"
+                    )
+                    continue
+
+            schemes_processed += 1
+
+        except requests.exceptions.RequestException as e:
+            schemes_failed.append(
+                f"{scheme.name} (AMFI: {scheme.amfi_code}) - Network/API Error: {e}"
+            )
+        except Exception as e:
+            schemes_failed.append(
+                f"{scheme.name} (AMFI: {scheme.amfi_code}) - Processing Error: {e}"
+            )
+
+    # --- Commit logic (unchanged) ---
+    if navs_to_add:
+        try:
+            db.session.add_all(navs_to_add)
+            db.session.commit()
+            flash(
+                f"Successfully added {new_navs_added_count} new NAV entries for {schemes_processed} schemes.",
+                "success",
+            )
+        except Exception as e:
+            db.session.rollback()
+            flash(
+                f"Error saving new NAV entries to database: {str(e)}",
+                "danger",
+            )
+    else:
+        flash(
+            f"Processed {schemes_processed} schemes. No new NAV entries needed.",
+            "info",
+        )
+
+    if schemes_failed:
+        flash(
+            f"Failed to fetch NAVs for {len(schemes_failed)} schemes:",
+            "warning",
+        )
+        error_html = (
+            "<ul>"
+            + "".join([f"<li>{err}</li>" for err in schemes_failed[:5]])
+            + "</ul>"
+        )
+        if len(schemes_failed) > 5:
+            error_html += "<p>...and more.</p>"
+        flash(Markup(error_html), "warning")
+
+    return redirect(url_for("mutual_funds"))

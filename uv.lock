@@ -628,6 +628,7 @@ dependencies = [
     { name = "flask-bcrypt" },
     { name = "flask-sqlalchemy" },
     { name = "markupsafe" },
+    { name = "requests" },
     { name = "selenium" },
     { name = "webdriver-manager" },
 ]
@@ -639,6 +640,7 @@ requires-dist = [
     { name = "flask-bcrypt", specifier = ">=1.0.1" },
     { name = "flask-sqlalchemy", specifier = ">=3.1.1" },
     { name = "markupsafe", specifier = ">=3.0.3" },
+    { name = "requests", specifier = ">=2.32.5" },
     { name = "selenium", specifier = ">=4.38.0" },
     { name = "webdriver-manager", specifier = ">=4.0.2" },
 ]

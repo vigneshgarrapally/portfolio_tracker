@@ -4,6 +4,12 @@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h1 class="h3 mb-0">Mutual Funds</h1>
     <div>
+        <form action="{{ url_for('fetch_all_navs') }}" method="POST" class="d-inline me-2"
+              onsubmit="this.fetchBtn.disabled=true; this.fetchBtn.innerHTML='<span class=\'spinner-border spinner-border-sm\' role=\'status\' aria-hidden=\'true\'></span> Fetching...';">
+            <button type="submit" name="fetchBtn" class="btn btn-info">
+                <i class="bi bi-cloud-download me-1"></i> Fetch All NAVs
+            </button>
+        </form>
         <a href="{{ url_for('upload_cas') }}" class="btn btn-success me-2">
             <i class="bi bi-upload me-1"></i> Upload CAS PDF
         </a>
