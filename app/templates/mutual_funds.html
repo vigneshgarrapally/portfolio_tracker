@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Mutual Funds</h1>
+    <div>
+        <a href="{{ url_for('upload_cas') }}" class="btn btn-success me-2">
+            <i class="bi bi-upload me-1"></i> Upload CAS PDF
+        </a>
+        <a href="{{ url_for('add_mf_transaction') }}" class="btn btn-primary disabled">
+            <i class="bi bi-plus-lg me-1"></i> Add Transaction
+        </a>
+    </div>
+</div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <form method="GET" action="{{ url_for('mutual_funds') }}" class="row g-3 align-items-center">
+            <div class="col-auto">
+                <label for="user_id" class="col-form-label">Filter by User:</label>
+            </div>
+            <div class="col-auto">
+                <select class="form-select" id="user_id" name="user_id" onchange="this.form.submit()">
+                    <option value="">All Users</option>
+                    {% for user in all_users %}
+                    <option value="{{ user.id }}" {{ 'selected' if user.id == selected_user_id }}>
+                        {{ user.name }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="col-auto">
+                <a href="{{ url_for('mutual_funds') }}" class="btn btn-outline-secondary">Clear</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card mb-4">
+    <div class="card-header">Overview</div>
+    <div class="card-body">
+        <div class="row text-center">
+            <div class="col">
+                <div class="text-muted small text-uppercase">Invested</div>
+                <div class="fw-bold fs-5">{{ summary.total_investment | inr }}</div>
+            </div>
+            <div class="col">
+                <div class="text-muted small text-uppercase">Current</div>
+                <div class="fw-bold fs-5">{{ summary.total_current_value | inr }}</div>
+                 {% if summary.latest_nav_date %}
+                 <small class="text-muted">As of {{ summary.latest_nav_date.strftime('%d-%b-%Y') }}</small>
+                 {% endif %}
+            </div>
+            <div class="col">
+                 {% set pnl = summary.total_pnl %}
+                 {% set pnl_pct = (pnl / summary.total_investment * 100) if summary.total_investment else 0 %}
+                <div class="text-muted small text-uppercase">Total P&L</div>
+                <div class="fw-bold fs-5 {% if pnl > 0 %}text-success{% elif pnl < 0 %}text-danger{% endif %}">
+                    {{ pnl | inr }}
+                </div>
+                 <small class="{% if pnl > 0 %}text-success{% elif pnl < 0 %}text-danger{% else %}text-muted{% endif %}">
+                     {{ "%.2f"|format(pnl_pct) }}%
+                 </small>
+            </div>
+            <div class="col">
+                <div class="text-muted small text-uppercase">XIRR</div>
+                <div class="fw-bold fs-5 {% if summary.overall_xirr > 0 %}text-success{% elif summary.overall_xirr < 0 %}text-danger{% endif %}">
+                     {{ "%.2f"|format(summary.overall_xirr) }}%
+                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="card mb-3">
+     <div class="card-header d-flex justify-content-between align-items-center">
+         <h5 class="mb-0">Active Fund Holdings</h5>
+     </div>
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr class="table-light">
+                        <th>Fund</th>
+                        <th class="text-end">Avg. NAV</th>
+                        <th class="text-end">Curr. NAV</th>
+                        <th class="text-end">Invested</th>
+                        <th class="text-end">Current</th>
+                        <th class="text-end">P&L</th>
+                        <th class="text-end">Units</th> {# Added Units column #}
+                        <th></th> {# Actions column header #}
+                    </tr>
+                </thead>
+                <tbody>
+                    {# Loop through ACTIVE schemes #}
+                    {% for scheme_id, data in active_schemes_summary.items() %}
+                    {% set pnl = data.pnl %}
+                    {% set pnl_pct = (pnl / data.investment * 100) if data.investment else 0 %}
+                    <tr class="align-middle">
+                        <td>
+                            <div>{{ data.scheme.name }}</div>
+                            <small class="text-muted">{{ data.scheme.type or 'N/A' }}</small>
+                        </td>
+                        <td class="text-end">{{ "%.2f"|format(data.avg_nav) }}</td>
+                        <td class="text-end">{{ "%.4f"|format(data.current_nav) if data.current_nav > 0 else 'N/A' }}</td>
+                        <td class="text-end">{{ "%.2f"|format(data.investment) }}</td>
+                        <td class="text-end">{{ "%.2f"|format(data.current_value) if data.current_value > 0 else 'N/A' }}</td>
+                        <td class="text-end">
+                             <div class="{% if pnl > 0 %}text-success{% elif pnl < 0 %}text-danger{% endif %}">
+                                 {{ "%.2f"|format(pnl) }}
+                             </div>
+                             <small class="{% if pnl > 0 %}text-success{% elif pnl < 0 %}text-danger{% else %}text-muted{% endif %}">
+                                 {{ "%.2f"|format(pnl_pct) }}%
+                             </small>
+                        </td>
+                        <td class="text-end fw-bold">{{ "%.4f"|format(data.current_units) }}</td>
+                        <td class="text-end">
+                            <a href="{{ url_for('mf_scheme_details', scheme_id=scheme_id, user_id=selected_user_id) }}" class="btn btn-sm btn-outline-secondary">
+                                View
+                            </a>
+                        </td>
+                    </tr>
+                    {% else %}
+                     <tr>
+                         <td colspan="8" class="text-center py-4 text-muted">
+                             No active mutual fund holdings found.
+                         </td>
+                     </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+<h5 class="mt-4">
+    <a data-bs-toggle="collapse" href="#inactiveFunds" role="button" aria-expanded="false" aria-controls="inactiveFunds" class="text-decoration-none">
+        Inactive / Past Holdings <i class="bi bi-chevron-down"></i>
+    </a>
+</h5>
+<div class="collapse" id="inactiveFunds">
+    <div class="card mb-3">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 table-sm">
+                    <thead>
+                        <tr class="table-light">
+                            <th>Fund</th>
+                            <th class="text-end">Invested</th>
+                            <th class="text-end">Realized P&L</th>
+                            <th></th> {# Actions column header #}
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {# Loop through INACTIVE schemes #}
+                        {% for scheme_id, data in inactive_schemes_summary.items() %}
+                        {% set realized_pnl = data.total_redemption_value - data.investment %}
+                        <tr class="align-middle text-muted">
+                            <td>
+                                <div>{{ data.scheme.name }}</div>
+                                <small>{{ data.scheme.type or 'N/A' }}</small>
+                            </td>
+                            <td class="text-end">{{ "%.2f"|format(data.investment) }}</td>
+                            <td class="text-end {% if realized_pnl > 0 %}text-success{% elif realized_pnl < 0 %}text-danger{% endif %}">
+                                {{ "%.2f"|format(realized_pnl) }}
+                            </td>
+                            <td class="text-end">
+                                <a href="{{ url_for('mf_scheme_details', scheme_id=scheme_id, user_id=selected_user_id) }}" class="btn btn-sm btn-outline-secondary">
+                                    View
+                                </a>
+                            </td>
+                        </tr>
+                        {% else %}
+                         <tr>
+                             <td colspan="4" class="text-center py-3 text-muted">
+                                 No inactive/past holdings found.
+                             </td>
+                         </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

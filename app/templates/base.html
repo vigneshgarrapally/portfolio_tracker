@@ -1,5 +1,6 @@
 <!doctype html>
 <html lang="en">
+
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,6 +9,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
+
 <body class="bg-light">
 
     <div class="d-flex">
@@ -15,23 +17,27 @@
             <h4 class="text-center mb-4">Portfolio Manager</h4>
             <ul class="nav nav-pills flex-column">
                 <li class="nav-item">
-                    <a class="nav-link {{ 'active' if 'index' in request.path else 'text-white' }}" href="{{ url_for('index') }}">
+                    <a class="nav-link {{ 'active' if 'index' in request.path else 'text-white' }}"
+                        href="{{ url_for('index') }}">
                         <i class="bi bi-speedometer2 me-2"></i>Dashboard
                     </a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link {{ 'active' if 'users' in request.path else 'text-white' }}" href="{{ url_for('users') }}">
+                    <a class="nav-link {{ 'active' if 'users' in request.path else 'text-white' }}"
+                        href="{{ url_for('users') }}">
                         <i class="bi bi-people me-2"></i>Users
                     </a>
                 </li>
                 <hr>
                 <li class="nav-item">
-                    <a class="nav-link {{ 'active' if 'gold' in request.path else 'text-white' }}" href="{{ url_for('gold') }}">
+                    <a class="nav-link {{ 'active' if 'gold' in request.path else 'text-white' }}"
+                        href="{{ url_for('gold') }}">
                         <i class="bi bi-gem me-2"></i>Gold
                     </a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link {{ 'active' if 'real_estate' in request.path else 'text-white' }}" href="{{ url_for('real_estate') }}">
+                    <a class="nav-link {{ 'active' if 'real_estate' in request.path else 'text-white' }}"
+                        href="{{ url_for('real_estate') }}">
                         <i class="bi bi-building me-2"></i>Real Estate
                     </a>
                 </li>
@@ -39,27 +45,31 @@
                     <a class="nav-link text-white-50" href="#"><i class="bi bi-graph-up me-2"></i>Stocks</a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link text-white-50" href="#"><i class="bi bi-pie-chart me-2"></i>Mutual Funds</a>
+                    <a class="nav-link {{ 'active' if 'mutual_funds' in request.path else 'text-white' }}"
+                        href="{{ url_for('mutual_funds') }}">
+                        <i class="bi bi-pie-chart me-2"></i>Mutual Funds
+                    </a>
                 </li>
                 <li class="nav-item">
                     <a class="nav-link text-white-50" href="#"><i class="bi bi-bank me-2"></i>Fixed Deposits</a>
                 </li>
                 <li class="nav-item">
-                    <a class="nav-link text-white-50" href="#"><i class="bi bi-graph-up me-2"></i>National Pension Scheme</a>
+                    <a class="nav-link text-white-50" href="#"><i class="bi bi-graph-up me-2"></i>National Pension
+                        Scheme</a>
                 </li>
             </ul>
         </nav>
 
         <div class="main-content flex-grow-1 p-4">
             {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
-                            {{ message }}
-                            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-                        </div>
-                    {% endfor %}
-                {% endif %}
+            {% if messages %}
+            {% for category, message in messages %}
+            <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+            {% endfor %}
+            {% endif %}
             {% endwith %}
 
             {% block content %}{% endblock %}
@@ -68,4 +78,5 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 </body>
+
 </html>

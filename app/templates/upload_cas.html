@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Upload CAS PDF</h1>
+    <a href="{{ url_for('mutual_funds') }}" class="btn btn-secondary">
+        <i class="bi bi-x-lg me-1"></i> Cancel
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form action="{{ url_for('upload_cas') }}" method="POST" enctype="multipart/form-data">
+            <div class="alert alert-info">
+                Upload your password-protected Consolidated Account Statement (CAS) PDF obtained from CAMS/Karvy/NDML. The system will extract transactions and add only the new ones based on their unique details.
+            </div>
+
+            <div class="mb-3">
+                <label for="user" class="form-label">Select User</label>
+                <select class="form-select" id="user" name="user_id" required>
+                    <option value="" disabled selected>Select a user</option>
+                    {% for user in users %}
+                        <option value="{{ user.id }}">{{ user.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div class="mb-3">
+                <label for="file" class="form-label">CAS PDF File</label>
+                <input class="form-control" type="file" id="file" name="file" accept=".pdf" required>
+            </div>
+
+            <div class="mb-3">
+                <label for="password" class="form-label">PDF Password</label>
+                <input type="password" class="form-control" id="password" name="password" required>
+                <small class="text-muted">This is usually your PAN number in uppercase.</small>
+            </div>
+
+             <button type="submit" class="btn btn-success"
+                    onsubmit="this.disabled=true; this.innerHTML='<span class=\'spinner-border spinner-border-sm\' role=\'status\' aria-hidden=\'true\'></span> Processing...';">
+                <i class="bi bi-upload me-1"></i> Upload and Process
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

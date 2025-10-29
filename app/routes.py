@@ -1,5 +1,7 @@
 import csv
 import io
+import json
+import hashlib
 from flask import render_template, request, redirect, url_for, flash
 from app import app, db
 from app.models import (
@@ -10,11 +12,16 @@ from app.models import (
     Property,
     PropertyValuation,
     PropertyExpense,
+    MutualFundScheme,
+    MutualFundFolio,
+    MutualFundTransaction,
+    MutualFundNAV,
 )
 from datetime import datetime, date
 from decimal import Decimal
 from markupsafe import Markup
-
+from sqlalchemy.exc import IntegrityError
+from casparser import read_cas_pdf
 from app.utils import calculate_xirr
 
 
@@ -24,6 +31,22 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
+
+def format_inr(value):
+    """Formats a number into Indian Lakh/Crore system."""
+    try:
+        val = float(value)
+        if val >= 10000000:  # Crores
+            return f"₹{val / 10000000:.2f} Cr"
+        elif val >= 100000:  # Lakhs
+            return f"₹{val / 100000:.2f} L"
+        else:
+            return f"₹{val:,.2f}"  # Use comma separators for thousands
+    except (ValueError, TypeError):
+        return "₹0.00"
+
+
+app.jinja_env.filters["inr"] = format_inr
 # === Main Routes ===
 
 
@@ -1188,3 +1211,672 @@ def unmark_sold_property(prop_id):
         flash(f"Error marking property as unsold: {str(e)}", "danger")
 
     return redirect(url_for("view_property", prop_id=prop_id))
+
+
+def generate_mf_hash(folio_id, scheme_id, date_obj, tx_type, units, amount):
+    """Generates a unique hash for a transaction based on key immutable fields."""
+    # Ensure consistent data types and formats
+    units_str = f"{units:.4f}" if units is not None else "None"
+    amount_str = f"{abs(amount):.2f}" if amount is not None else "None"
+    date_str = date_obj.strftime("%Y-%m-%d")
+
+    data_string = f"{folio_id}|{scheme_id}|{date_str}|{tx_type}|{units_str}|{amount_str}"
+    return hashlib.sha256(data_string.encode("utf-8")).hexdigest()
+
+
+# === Mutual Fund Routes ===
+
+
+@app.route("/mutual_funds")
+def mutual_funds():
+    """Display the main Mutual Funds dashboard grouped by Scheme."""
+    user_id = request.args.get("user_id", type=int)
+    all_users = User.query.order_by(User.name).all()
+
+    tx_query = MutualFundTransaction.query.join(MutualFundFolio)
+    if user_id:
+        tx_query = tx_query.filter(MutualFundFolio.user_id == user_id)
+
+    transactions = (
+        tx_query.options(db.joinedload(MutualFundTransaction.scheme))
+        .order_by(
+            MutualFundTransaction.scheme_id,
+            MutualFundTransaction.transaction_date,
+        )
+        .all()
+    )
+
+    # --- Get Latest NAVs (logic unchanged) ---
+    latest_navs = {}
+    latest_nav_date = None
+    latest_nav_subq = (
+        db.session.query(
+            MutualFundNAV.scheme_id,
+            db.func.max(MutualFundNAV.nav_date).label("max_date"),
+        )
+        .group_by(MutualFundNAV.scheme_id)
+        .subquery()
+    )
+    latest_nav_query = (
+        db.session.query(MutualFundNAV)
+        .join(
+            latest_nav_subq,
+            db.and_(
+                MutualFundNAV.scheme_id == latest_nav_subq.c.scheme_id,
+                MutualFundNAV.nav_date == latest_nav_subq.c.max_date,
+            ),
+        )
+        .all()
+    )
+    for nav_entry in latest_nav_query:
+        latest_navs[nav_entry.scheme_id] = nav_entry.nav
+        if latest_nav_date is None or nav_entry.nav_date > latest_nav_date:
+            latest_nav_date = nav_entry.nav_date
+
+    # --- Process transactions (logic unchanged) ---
+    schemes_summary_temp = {}  # Use a temporary dict first
+    xirr_cash_flows = []
+
+    for tx in transactions:
+        scheme_id = tx.scheme_id
+        if scheme_id not in schemes_summary_temp:
+            schemes_summary_temp[scheme_id] = {
+                "scheme": tx.scheme,
+                "current_units": Decimal("0.0"),
+                "total_purchased_units": Decimal("0.0"),
+                "investment": Decimal("0.0"),
+                "total_redemption_value": Decimal("0.0"),
+                "transactions": [],
+            }
+        summary = schemes_summary_temp[scheme_id]
+        summary["transactions"].append(tx)
+        amount = tx.amount or Decimal("0.0")
+        units = tx.units or Decimal("0.0")
+
+        if tx.type in [
+            "PURCHASE",
+            "SWITCH_IN",
+            "DIVIDEND_REINVEST",
+            "STP_IN",
+        ]:
+            summary["investment"] += amount
+            summary["current_units"] += units
+            summary["total_purchased_units"] += units
+            xirr_cash_flows.append((tx.transaction_date, -amount))
+        elif tx.type in ["REDEMPTION", "SWITCH_OUT", "STP_OUT"]:
+            summary["current_units"] -= abs(units)
+            summary["total_redemption_value"] += amount
+            xirr_cash_flows.append((tx.transaction_date, amount))
+
+    # --- Calculate derived metrics and SEPARATE active/inactive ---
+    active_schemes_summary = {}  # Holdings with units > 0
+    inactive_schemes_summary = {}  # Holdings with units <= 0
+    total_investment_overall = Decimal("0.0")
+    total_current_value_overall = Decimal("0.0")  # Only for active holdings
+
+    # Use a small tolerance for zero check
+    ZERO_TOLERANCE = Decimal("0.0001")
+
+    for scheme_id, summary in schemes_summary_temp.items():
+        latest_nav = latest_navs.get(scheme_id, Decimal("0.0"))
+        summary["current_nav"] = latest_nav
+        summary["current_value"] = summary["current_units"] * latest_nav
+        summary["pnl"] = (
+            summary["current_value"] + summary["total_redemption_value"]
+        ) - summary["investment"]
+        summary["avg_nav"] = (
+            (summary["investment"] / summary["total_purchased_units"])
+            if summary["total_purchased_units"] > 0
+            else Decimal("0.0")
+        )
+
+        # Scheme XIRR (logic unchanged)
+        scheme_cash_flows = []
+        for tx in summary["transactions"]:
+            amount = tx.amount or Decimal("0.0")
+            if tx.type in [
+                "PURCHASE",
+                "SWITCH_IN",
+                "DIVIDEND_REINVEST",
+                "STP_IN",
+            ]:
+                scheme_cash_flows.append((tx.transaction_date, -amount))
+            elif tx.type in ["REDEMPTION", "SWITCH_OUT", "STP_OUT"]:
+                scheme_cash_flows.append((tx.transaction_date, amount))
+        if summary["current_units"] > ZERO_TOLERANCE and latest_nav_date:
+            scheme_cash_flows.append((date.today(), summary["current_value"]))
+        summary["xirr"] = calculate_xirr(scheme_cash_flows)
+
+        # --- SEPARATION LOGIC ---
+        if abs(summary["current_units"]) < ZERO_TOLERANCE:
+            inactive_schemes_summary[scheme_id] = summary
+            # Include investment cost in overall investment even if inactive
+            total_investment_overall += summary["investment"]
+        else:
+            active_schemes_summary[scheme_id] = summary
+            total_investment_overall += summary["investment"]
+            total_current_value_overall += summary[
+                "current_value"
+            ]  # Only count current value of active
+
+        del summary["transactions"]  # Clean up before sending
+
+    # Calculate Overall XIRR (using active holdings' current value)
+    if total_current_value_overall > 0 and latest_nav_date:
+        xirr_cash_flows.append((date.today(), total_current_value_overall))
+    overall_xirr = calculate_xirr(xirr_cash_flows)
+
+    overall_summary = {
+        "total_investment": total_investment_overall,
+        "total_current_value": total_current_value_overall,  # Based on active holdings
+        "total_pnl": total_current_value_overall - total_investment_overall,
+        "overall_xirr": overall_xirr,
+        "latest_nav_date": latest_nav_date,
+    }
+
+    return render_template(
+        "mutual_funds.html",
+        active_schemes_summary=active_schemes_summary,  # Pass active schemes
+        inactive_schemes_summary=inactive_schemes_summary,  # Pass inactive schemes
+        summary=overall_summary,
+        all_users=all_users,
+        selected_user_id=user_id,
+    )
+
+
+@app.route("/mutual_funds/scheme_details/<int:scheme_id>")
+def mf_scheme_details(scheme_id):
+    """Show transaction history for a specific scheme."""
+    user_id = request.args.get(
+        "user_id", type=int
+    )  # Get user_id from query param
+
+    scheme = MutualFundScheme.query.get_or_404(scheme_id)
+
+    # Base query for transactions of this scheme
+    tx_query = (
+        MutualFundTransaction.query.filter_by(scheme_id=scheme_id)
+        .join(MutualFundFolio)
+        .options(db.joinedload(MutualFundTransaction.folio))
+    )  # Eager load folio
+
+    # Filter by user if specified
+    if user_id:
+        tx_query = tx_query.filter(MutualFundFolio.user_id == user_id)
+
+    transactions = tx_query.order_by(
+        MutualFundTransaction.transaction_date.asc()
+    ).all()
+
+    # --- Calculate Scheme specific details ---
+    current_units = Decimal("0.0")
+    investment = Decimal("0.0")
+    total_redemption_value = Decimal("0.0")
+    scheme_cash_flows = []
+    folios_involved = set()  # Track unique folios
+
+    for tx in transactions:
+        folios_involved.add(tx.folio.folio_number)
+        amount = tx.amount or Decimal("0.0")
+        units = tx.units or Decimal("0.0")
+
+        if tx.type in [
+            "PURCHASE",
+            "SWITCH_IN",
+            "DIVIDEND_REINVEST",
+            "STP_IN",
+        ]:
+            current_units += units
+            investment += amount
+            scheme_cash_flows.append((tx.transaction_date, -amount))
+        elif tx.type in ["REDEMPTION", "SWITCH_OUT", "STP_OUT"]:
+            current_units -= abs(units)
+            total_redemption_value += amount
+            scheme_cash_flows.append((tx.transaction_date, amount))
+
+    # Get latest NAV for current value
+    latest_nav_entry = (
+        MutualFundNAV.query.filter_by(scheme_id=scheme_id)
+        .order_by(MutualFundNAV.nav_date.desc())
+        .first()
+    )
+    current_value = Decimal("0.0")
+    if latest_nav_entry and current_units > 0:
+        current_value = current_units * latest_nav_entry.nav
+        scheme_cash_flows.append(
+            (date.today(), current_value)
+        )  # Add current value for XIRR
+
+    scheme_xirr = calculate_xirr(scheme_cash_flows)
+
+    # Pass user_id back for consistent filtering
+    selected_user_id = user_id
+    all_users = User.query.order_by(User.name).all()  # For filter consistency
+
+    return render_template(
+        "mf_scheme_details.html",
+        scheme=scheme,
+        transactions=transactions,
+        current_units=current_units,
+        scheme_xirr=scheme_xirr,
+        folio_numbers=", ".join(
+            sorted(list(folios_involved))
+        ),  # Comma-separated list
+        all_users=all_users,
+        selected_user_id=selected_user_id,
+    )
+
+
+@app.route("/mutual_funds/add", methods=["GET", "POST"])
+def add_mf_transaction():
+    """Add a new MF transaction manually."""
+    if request.method == "POST":
+        try:
+            # --- Get or Create Folio ---
+            user_id = int(request.form.get("user_id"))
+            folio_number = request.form.get("folio_number")
+            amc = request.form.get("amc")
+            folio = MutualFundFolio.query.filter_by(
+                user_id=user_id, amc=amc, folio_number=folio_number
+            ).first()
+            if not folio:
+                folio = MutualFundFolio(
+                    user_id=user_id, amc=amc, folio_number=folio_number
+                )
+                db.session.add(folio)
+                db.session.flush()  # Get folio.id before commit
+
+            # --- Get or Create Scheme ---
+            isin = request.form.get("isin")
+            scheme_name = request.form.get("scheme_name")
+            scheme = MutualFundScheme.query.filter_by(isin=isin).first()
+            if not scheme:
+                scheme = MutualFundScheme(name=scheme_name, isin=isin)
+                db.session.add(scheme)
+                db.session.flush()  # Get scheme.id before commit
+
+            # --- Create Transaction ---
+            units = Decimal(request.form.get("units") or 0)
+            amount = Decimal(request.form.get("amount") or 0)
+            nav = Decimal(request.form.get("nav") or 0)
+            tx_date = datetime.strptime(
+                request.form.get("transaction_date"), "%Y-%m-%d"
+            ).date()
+            tx_type = request.form.get("type")
+
+            # Manual transactions don't have a reliable unique hash like CAS
+            # We rely on user not duplicating or handle it via UI constraints later
+            new_tx = MutualFundTransaction(
+                folio_id=folio.id,
+                scheme_id=scheme.id,
+                transaction_date=tx_date,
+                description=request.form.get("description"),
+                amount=amount if amount > 0 else None,
+                units=units if units != 0 else None,  # Allow negative units
+                nav=nav if nav > 0 else None,
+                type=tx_type,
+                dividend_rate=(
+                    Decimal(request.form.get("dividend_rate") or 0)
+                    if request.form.get("dividend_rate")
+                    else None
+                ),
+                unique_hash=None,  # Mark as manual entry
+            )
+            db.session.add(new_tx)
+            db.session.commit()
+            flash("Mutual Fund transaction added successfully!", "success")
+            return redirect(url_for("mutual_funds"))
+
+        except IntegrityError:
+            db.session.rollback()
+            flash(
+                "Database error: Could not add transaction, possibly a constraint violation.",
+                "danger",
+            )
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error adding transaction: {str(e)}", "danger")
+
+    # GET request or failed POST
+    users = User.query.order_by(User.name).all()
+    # Pass existing schemes/folios for potential dropdowns/datalists
+    schemes = MutualFundScheme.query.order_by(MutualFundScheme.name).all()
+    folios = MutualFundFolio.query.order_by(
+        MutualFundFolio.amc, MutualFundFolio.folio_number
+    ).all()
+    return render_template(
+        "add_mf_transaction.html", users=users, schemes=schemes, folios=folios
+    )
+
+
+@app.route("/mutual_funds/edit/<int:tx_id>", methods=["GET", "POST"])
+def edit_mf_transaction(tx_id):
+    """Edit an existing manually added MF transaction."""
+    tx = MutualFundTransaction.query.get_or_404(tx_id)
+    # Potentially restrict editing CAS-imported transactions if tx.unique_hash is not None
+
+    if request.method == "POST":
+        try:
+            # --- Update Transaction Fields ---
+            # NOTE: We generally SHOULD NOT allow changing Folio or Scheme easily
+            # as it breaks historical context. Best to delete and re-add if wrong.
+            tx.transaction_date = datetime.strptime(
+                request.form.get("transaction_date"), "%Y-%m-%d"
+            ).date()
+            tx.description = request.form.get("description")
+            tx.amount = Decimal(request.form.get("amount") or 0) or None
+            tx.units = Decimal(request.form.get("units") or 0) or None
+            tx.nav = Decimal(request.form.get("nav") or 0) or None
+            tx.type = request.form.get("type")
+            tx.dividend_rate = (
+                Decimal(request.form.get("dividend_rate") or 0)
+                if request.form.get("dividend_rate")
+                else None
+            )
+
+            # Add validation: balance units shouldn't be negative, etc.
+
+            db.session.commit()
+            flash("Transaction updated successfully!", "success")
+            return redirect(
+                url_for("mutual_funds")
+            )  # Redirect to main list for now
+
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error updating transaction: {str(e)}", "danger")
+
+    # GET request or failed POST
+    # Pass necessary data for the form (users, schemes, folios if needed for dropdowns)
+    return render_template("edit_mf_transaction.html", tx=tx)
+
+
+@app.route("/mutual_funds/delete/<int:tx_id>", methods=["POST"])
+def delete_mf_transaction(tx_id):
+    """Delete an MF transaction."""
+    tx = MutualFundTransaction.query.get_or_404(tx_id)
+    try:
+        db.session.delete(tx)
+        db.session.commit()
+        flash("Transaction deleted successfully.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting transaction: {str(e)}", "danger")
+    return redirect(url_for("mutual_funds"))
+
+
+@app.route("/mutual_funds/upload_cas", methods=["GET", "POST"])
+def upload_cas():
+    """Handle CAS PDF upload."""
+    if request.method == "POST":
+        if "file" not in request.files:
+            flash("No file part", "danger")
+            return redirect(url_for("upload_cas"))
+
+        file = request.files["file"]
+        password = request.form.get("password")
+        user_id = request.form.get("user_id")
+
+        if file.filename == "":
+            flash("No selected file", "danger")
+            return redirect(url_for("upload_cas"))
+
+        if not file.filename.endswith(".pdf"):
+            flash(
+                "Invalid file type. Please upload a password-protected PDF file.",
+                "danger",
+            )
+            return redirect(url_for("upload_cas"))
+
+        try:
+            # Read file content into memory
+            file_content = file.read()
+
+            # Use casparser
+            data = json.loads(
+                read_cas_pdf(
+                    io.BytesIO(file_content), password, output="json"
+                )
+            )
+
+            if not data or "folios" not in data:
+                flash(
+                    "Could not parse CAS data or no folios found.", "warning"
+                )
+                return redirect(url_for("upload_cas"))
+
+            # --- Process Data (All or Nothing) ---
+            schemes_cache = (
+                {}
+            )  # Cache schemes found/created in this upload (ISIN -> Scheme object)
+            folios_cache = (
+                {}
+            )  # Cache folios found/created ( (user_id, amc, folio_num) -> Folio object)
+            transactions_to_add = []
+            navs_to_add_or_update = {}
+            errors = []
+
+            user = User.query.get(user_id)
+            if not user:
+                flash(
+                    f"User with ID {user_id} not found. Cannot process CAS.",
+                    "danger",
+                )
+                return redirect(url_for("upload_cas"))
+
+            # --- Iterate and Validate ---
+            for folio_data in data["folios"]:
+                folio_key = (user.id, folio_data["amc"], folio_data["folio"])
+                folio = folios_cache.get(folio_key)
+                if not folio:
+                    folio = MutualFundFolio.query.filter_by(
+                        user_id=user.id,
+                        amc=folio_data["amc"],
+                        folio_number=folio_data["folio"],
+                    ).first()
+                    if not folio:
+                        folio = MutualFundFolio(
+                            user_id=user.id,
+                            amc=folio_data["amc"],
+                            folio_number=folio_data["folio"],
+                        )
+                        db.session.add(folio)
+                        try:
+                            db.session.flush()  # Get ID before full commit
+                        except IntegrityError:
+                            db.session.rollback()
+                            errors.append(
+                                f"Error creating folio {folio_data['folio']} for AMC {folio_data['amc']}. Duplicate?"
+                            )
+                            continue  # Skip this folio
+                    folios_cache[folio_key] = folio
+
+                for scheme_data in folio_data["schemes"]:
+                    isin = scheme_data.get("isin")
+                    if not isin:
+                        errors.append(
+                            f"Scheme '{scheme_data['scheme']}' in folio {folio.folio_number} is missing ISIN. Skipping."
+                        )
+                        continue
+
+                    scheme = schemes_cache.get(isin)
+                    if not scheme:
+                        scheme = MutualFundScheme.query.filter_by(
+                            isin=isin
+                        ).first()
+                        if not scheme:
+                            scheme = MutualFundScheme(
+                                name=scheme_data["scheme"],
+                                isin=isin,
+                                amfi_code=scheme_data.get("amfi"),
+                                rta_code=scheme_data.get("rta_code"),
+                                rta=scheme_data.get("rta"),
+                                type=scheme_data.get("type"),
+                            )
+                            db.session.add(scheme)
+                            try:
+                                db.session.flush()  # Get ID
+                            except IntegrityError:
+                                db.session.rollback()
+                                errors.append(
+                                    f"Error creating scheme {scheme_data['scheme']} (ISIN: {isin}). Duplicate?"
+                                )
+                                continue  # Skip schemes in this folio if creation fails
+                        schemes_cache[isin] = scheme
+
+                    for tx_data in scheme_data["transactions"]:
+                        try:
+                            tx_type = tx_data.get("type")
+                            if tx_type in [
+                                "PURCHASE",
+                                "REDEMPTION",
+                            ]:
+                                tx_date = datetime.strptime(
+                                    tx_data["date"], "%Y-%m-%d"
+                                ).date()  # CAS date format
+                                units = (
+                                    Decimal(str(tx_data.get("units") or 0))
+                                    if tx_data.get("units") is not None
+                                    else None
+                                )
+                                amount = (
+                                    Decimal(str(tx_data.get("amount") or 0))
+                                    if tx_data.get("amount") is not None
+                                    else None
+                                )
+                                nav = (
+                                    Decimal(str(tx_data.get("nav") or 0))
+                                    if tx_data.get("nav") is not None
+                                    else None
+                                )
+                                abs_amount = (
+                                    abs(amount)
+                                    if amount is not None
+                                    else None
+                                )
+
+                                # Generate hash for deduplication
+                                tx_hash = generate_mf_hash(
+                                    folio.id,
+                                    scheme.id,
+                                    tx_date,
+                                    tx_type,
+                                    units,
+                                    abs_amount,
+                                )
+
+                                # Check if hash already exists (using a query for atomicity)
+                                exists = (
+                                    db.session.query(MutualFundTransaction.id)
+                                    .filter_by(unique_hash=tx_hash)
+                                    .first()
+                                    is not None
+                                )
+                                if not exists:
+                                    transactions_to_add.append(
+                                        MutualFundTransaction(
+                                            folio_id=folio.id,
+                                            scheme_id=scheme.id,
+                                            transaction_date=tx_date,
+                                            amount=abs_amount,
+                                            units=units,
+                                            nav=nav,
+                                            type=tx_type,
+                                            unique_hash=tx_hash,
+                                        )
+                                    )
+                                # Add NAV data to cache for later upsert
+                                if nav and tx_date:
+                                    nav_key = (scheme.id, tx_date)
+                                    navs_to_add_or_update[nav_key] = nav
+
+                        except Exception as e:
+                            errors.append(
+                                f"Row Error (Folio: {folio.folio_number}, Scheme: {scheme.name}, Date: {tx_data.get('date')}): {str(e)}"
+                            )
+
+            # --- ATOMIC COMMIT ---
+            if errors:
+                db.session.rollback()
+                flash(
+                    f"Upload failed. {len(errors)} errors found. No records were added.",
+                    "danger",
+                )
+                error_html = (
+                    "<ul>"
+                    + "".join([f"<li>{e}</li>" for e in errors[:10]])
+                    + "</ul>"
+                )
+                if len(errors) > 10:
+                    error_html += (
+                        f"<p>...and {len(errors) - 10} more errors.</p>"
+                    )
+                flash(Markup(error_html), "danger")
+
+            elif not transactions_to_add and not navs_to_add_or_update:
+                flash(
+                    "No new transactions or NAV updates found in the file.",
+                    "info",
+                )
+
+            else:
+                try:
+                    # Add new transactions
+                    if transactions_to_add:
+                        db.session.add_all(transactions_to_add)
+
+                    # Upsert NAVs
+                    if navs_to_add_or_update:
+                        existing_navs = {
+                            (n.scheme_id, n.nav_date): n
+                            for n in MutualFundNAV.query.filter(
+                                MutualFundNAV.scheme_id.in_(
+                                    [k[0] for k in navs_to_add_or_update]
+                                ),
+                                MutualFundNAV.nav_date.in_(
+                                    [k[1] for k in navs_to_add_or_update]
+                                ),
+                            ).all()
+                        }
+
+                        for (
+                            scheme_id,
+                            nav_date,
+                        ), nav_value in navs_to_add_or_update.items():
+                            nav_entry = existing_navs.get(
+                                (scheme_id, nav_date)
+                            )
+                            if nav_entry:
+                                if not abs(
+                                    nav_entry.nav - nav_value
+                                ) < Decimal("0.0001"):
+                                    nav_entry.nav = (
+                                        nav_value  # Update if different
+                                    )
+                                    db.session.add(nav_entry)
+                            else:
+                                new_nav = MutualFundNAV(
+                                    scheme_id=scheme_id,
+                                    nav_date=nav_date,
+                                    nav=nav_value,
+                                )
+                                db.session.add(new_nav)
+
+                    db.session.commit()
+                    flash(
+                        f"Successfully processed CAS file. Added {len(transactions_to_add)} new transactions. Updated/Added NAVs.",
+                        "success",
+                    )
+                except Exception as e:
+                    db.session.rollback()
+                    flash(f"Error during final commit: {str(e)}", "danger")
+
+        except Exception as e:
+            db.session.rollback()  # Rollback any partial flushes
+            flash(f"Error processing PDF: {str(e)}", "danger")
+
+        return redirect(url_for("mutual_funds"))
+
+    # GET request
+    users = User.query.order_by(User.name).all()
+    return render_template("upload_cas.html", users=users)

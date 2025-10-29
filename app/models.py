@@ -1,6 +1,6 @@
 from app import db
 from datetime import datetime
-from sqlalchemy.schema import CheckConstraint
+from sqlalchemy.schema import CheckConstraint, UniqueConstraint
 from decimal import Decimal
 
 
@@ -36,6 +36,12 @@ class User(db.Model):
     )
     properties = db.relationship(
         "Property",
+        back_populates="user",
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
+    mutual_fund_folios = db.relationship(
+        "MutualFundFolio",
         back_populates="user",
         lazy=True,
         cascade="all, delete-orphan",
@@ -301,3 +307,179 @@ class PropertyExpense(db.Model):
 
     def __repr__(self):
         return f"<PropertyExpense(Property: {self.property_id}, Type: {self.expense_type}, Amount: {self.amount})>"
+
+
+class MutualFundScheme(db.Model):
+    """
+    Represents a specific Mutual Fund scheme.
+    Identified primarily by ISIN.
+    """
+
+    __tablename__ = "mutual_fund_schemes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(255), nullable=False, index=True)
+    isin = db.Column(
+        db.String(20), unique=True, nullable=False, index=True
+    )  # Primary unique identifier
+    amfi_code = db.Column(
+        db.String(20), unique=True, nullable=True, index=True
+    )  # Alternate identifier
+    rta_code = db.Column(
+        db.String(50), nullable=True
+    )  # Registrar Transfer Agent Code
+    rta = db.Column(
+        db.String(50), nullable=True
+    )  # Registrar Transfer Agent Name
+    type = db.Column(
+        db.String(50), nullable=True
+    )  # e.g., Equity, Debt, Hybrid
+
+    # Relationships
+    transactions = db.relationship(
+        "MutualFundTransaction",
+        back_populates="scheme",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
+    navs = db.relationship(
+        "MutualFundNAV",
+        back_populates="scheme",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
+
+    def __repr__(self):
+        return f"<MutualFundScheme(ISIN='{self.isin}', Name='{self.name[:30]}...')>"
+
+
+class MutualFundFolio(db.Model):
+    """
+    Represents a folio (account) with a specific AMC for a user.
+    """
+
+    __tablename__ = "mutual_fund_folios"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    folio_number = db.Column(db.String(50), nullable=False, index=True)
+    amc = db.Column(db.String(100), nullable=False)
+
+    # Relationships
+    user = db.relationship("User", back_populates="mutual_fund_folios")
+    transactions = db.relationship(
+        "MutualFundTransaction",
+        back_populates="folio",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
+
+    # Ensure a user doesn't have the same folio number twice with the same AMC
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "amc", "folio_number", name="uq_user_amc_folio"
+        ),
+    )
+
+    def __repr__(self):
+        return f"<MutualFundFolio(User: {self.user_id}, Folio: '{self.folio_number}', AMC: '{self.amc}')>"
+
+
+class MutualFundTransaction(db.Model):
+    """
+    Represents a single transaction within a folio for a specific scheme.
+    Includes buy, sell, dividend reinvestment, etc.
+    """
+
+    __tablename__ = "mutual_fund_transactions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    folio_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mutual_fund_folios.id"),
+        nullable=False,
+        index=True,
+    )
+    scheme_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mutual_fund_schemes.id"),
+        nullable=False,
+        index=True,
+    )
+
+    transaction_date = db.Column(db.Date, nullable=False, index=True)
+    amount = db.Column(
+        db.Numeric(12, 2), nullable=True
+    )  # Can be null for certain types like switch out
+    units = db.Column(
+        db.Numeric(14, 4), nullable=True
+    )  # Can be null for dividend payout
+    nav = db.Column(
+        db.Numeric(10, 4), nullable=True
+    )  # NAV at transaction time
+    type = db.Column(
+        db.String(50), nullable=False, index=True
+    )  # PURCHASE, REDEMPTION
+
+    # --- For Deduplication ---
+    # Hash created from key immutable fields to prevent duplicate entries from CAS uploads
+    # Example fields: folio_id, scheme_id, date, type, units, amount
+    unique_hash = db.Column(
+        db.String(64), unique=True, nullable=False, index=True
+    )
+
+    # Relationships
+    folio = db.relationship("MutualFundFolio", back_populates="transactions")
+    scheme = db.relationship(
+        "MutualFundScheme", back_populates="transactions"
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount >= 0", name="check_mf_tx_amount_non_negative"
+        ),
+        # Units can be negative for redemptions/switches
+        # NAV should be positive if present
+        CheckConstraint(
+            "nav > 0 OR nav IS NULL", name="check_mf_tx_nav_positive"
+        ),
+    )
+
+    def __repr__(self):
+        units_str = f"{self.units:.4f}" if self.units is not None else "N/A"
+        amount_str = (
+            f"{self.amount:.2f}" if self.amount is not None else "N/A"
+        )
+        return f"<MutualFundTransaction(Date: {self.transaction_date}, Type: {self.type}, Units: {units_str}, Amount: {amount_str})>"
+
+
+class MutualFundNAV(db.Model):
+    """
+    Stores the historical Net Asset Value (NAV) for a scheme on a specific date.
+    """
+
+    __tablename__ = "mutual_fund_navs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    scheme_id = db.Column(
+        db.Integer,
+        db.ForeignKey("mutual_fund_schemes.id"),
+        nullable=False,
+        index=True,
+    )
+    nav_date = db.Column(db.Date, nullable=False, index=True)
+    nav = db.Column(db.Numeric(10, 4), nullable=False)
+
+    # Relationship
+    scheme = db.relationship("MutualFundScheme", back_populates="navs")
+
+    # Ensure only one NAV entry per scheme per date
+    __table_args__ = (
+        UniqueConstraint("scheme_id", "nav_date", name="uq_scheme_date_nav"),
+        CheckConstraint("nav > 0", name="check_mf_nav_positive"),
+    )
+
+    def __repr__(self):
+        return f"<MutualFundNAV(Scheme: {self.scheme_id}, Date: {self.nav_date}, NAV: {self.nav})>"
