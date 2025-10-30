@@ -38,3 +38,7 @@ body {
     text-transform: uppercase;
     background-color: #f8f9fa;
 }
+
+.card-body canvas {
+    min-height: 250px; /* Example height to force rendering */
+}

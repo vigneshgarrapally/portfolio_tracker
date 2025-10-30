@@ -62,6 +62,335 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/dashboard")
+def dashboard():
+    """Display the main dashboard with summaries for all assets."""
+    user_id = request.args.get("user_id", type=int)
+    all_users = User.query.order_by(User.name).all()
+
+    today = date.today()
+    overall_cash_flows = []
+    asset_data = {
+        "gold": {
+            "investment": Decimal("0.0"),
+            "current_value": Decimal("0.0"),
+            "xirr": 0.0,
+        },
+        "real_estate": {
+            "investment": Decimal("0.0"),
+            "current_value": Decimal("0.0"),
+            "xirr": 0.0,
+        },
+        "mutual_funds": {
+            "investment": Decimal("0.0"),
+            "current_value": Decimal("0.0"),
+            "xirr": 0.0,
+        },
+        "stocks": {
+            "investment": Decimal("0.0"),
+            "current_value": Decimal("0.0"),
+            "xirr": 0.0,
+        },
+    }
+
+    # === 1. Gold Calculation ===
+    try:
+        gold_buy_query = GoldTransaction.query
+        gold_sell_query = GoldSellTransaction.query
+        if user_id:
+            gold_buy_query = gold_buy_query.filter_by(user_id=user_id)
+            gold_sell_query = gold_sell_query.filter_by(user_id=user_id)
+
+        gold_buys = gold_buy_query.all()
+        gold_sells = gold_sell_query.all()
+
+        gold_investment = sum(tx.grams * tx.per_gm_price for tx in gold_buys)
+        gold_buy_grams = sum(tx.grams for tx in gold_buys)
+        gold_sell_grams = sum(tx.grams for tx in gold_sells)
+        gold_current_holdings = gold_buy_grams - gold_sell_grams
+
+        latest_gold_price = GoldPrice.query.order_by(
+            GoldPrice.date.desc()
+        ).first()
+        gold_current_value = Decimal("0.0")
+        if latest_gold_price:
+            gold_current_value = (
+                gold_current_holdings * latest_gold_price.price_per_gram_24k
+            )
+
+        gold_cash_flows = []
+        for tx in gold_buys:
+            gold_cash_flows.append(
+                (tx.invoice_date, -(tx.grams * tx.per_gm_price))
+            )
+        for tx in gold_sells:
+            gold_cash_flows.append(
+                (tx.sell_date, tx.grams * tx.sell_price_per_gram)
+            )
+        if gold_current_holdings > 0:
+            gold_cash_flows.append((today, gold_current_value))
+
+        overall_cash_flows.extend(gold_cash_flows)
+        asset_data["gold"][
+            "investment"
+        ] = gold_investment  # Using total investment for allocation
+        asset_data["gold"]["current_value"] = gold_current_value
+        asset_data["gold"]["xirr"] = calculate_xirr(gold_cash_flows)
+    except Exception as e:
+        print(f"Error calculating Gold dashboard: {e}")
+
+    # === 2. Real Estate Calculation ===
+    try:
+        prop_query = Property.query.filter(
+            Property.sell_date == None
+        )  # Only active holdings
+        if user_id:
+            prop_query = prop_query.filter_by(user_id=user_id)
+
+        unsold_properties = prop_query.all()
+
+        re_investment_active = Decimal("0.0")
+        re_current_value = Decimal("0.0")
+        re_cash_flows = []
+
+        for prop in unsold_properties:
+            re_investment_active += prop.total_cost_basis
+            re_cash_flows.append(
+                (prop.purchase_date, -prop.total_purchase_cost)
+            )
+            for exp in prop.expenses.filter_by(
+                is_capital_improvement=True
+            ).all():
+                re_cash_flows.append((exp.expense_date, -exp.amount))
+
+            latest_val = prop.latest_valuation
+            if latest_val:
+                re_current_value += latest_val.estimated_value
+
+        if re_current_value > 0:
+            re_cash_flows.append((today, re_current_value))
+
+        # Add cash flows from SOLD properties for XIRR
+        sold_prop_query = Property.query.filter(Property.sell_date != None)
+        if user_id:
+            sold_prop_query = sold_prop_query.filter_by(user_id=user_id)
+        for prop in sold_prop_query.all():
+            re_cash_flows.append(
+                (prop.purchase_date, -prop.total_purchase_cost)
+            )
+            for exp in prop.expenses.filter_by(
+                is_capital_improvement=True
+            ).all():
+                re_cash_flows.append((exp.expense_date, -exp.amount))
+            re_cash_flows.append(
+                (
+                    prop.sell_date,
+                    (prop.sell_value or 0) - (prop.selling_costs or 0),
+                )
+            )
+
+        overall_cash_flows.extend(re_cash_flows)
+        asset_data["real_estate"]["investment"] = re_investment_active
+        asset_data["real_estate"]["current_value"] = re_current_value
+        asset_data["real_estate"]["xirr"] = calculate_xirr(re_cash_flows)
+    except Exception as e:
+        print(f"Error calculating Real Estate dashboard: {e}")
+
+    # === 3. Mutual Funds Calculation ===
+    try:
+        # (This logic is copied from the mutual_funds route)
+        tx_query = MutualFundTransaction.query.join(MutualFundFolio)
+        if user_id:
+            tx_query = tx_query.filter(MutualFundFolio.user_id == user_id)
+        transactions = tx_query.all()
+
+        latest_nav_subq = (
+            db.session.query(
+                MutualFundNAV.scheme_id,
+                db.func.max(MutualFundNAV.nav_date).label("max_date"),
+            )
+            .group_by(MutualFundNAV.scheme_id)
+            .subquery()
+        )
+        latest_nav_query = (
+            db.session.query(MutualFundNAV)
+            .join(
+                latest_nav_subq,
+                db.and_(
+                    MutualFundNAV.scheme_id == latest_nav_subq.c.scheme_id,
+                    MutualFundNAV.nav_date == latest_nav_subq.c.max_date,
+                ),
+            )
+            .all()
+        )
+        latest_navs = {nav.scheme_id: nav.nav for nav in latest_nav_query}
+
+        mf_schemes_summary = {}
+        mf_cash_flows = []
+        mf_investment_active = Decimal("0.0")
+        mf_current_value = Decimal("0.0")
+
+        for tx in transactions:
+            if tx.scheme_id not in mf_schemes_summary:
+                mf_schemes_summary[tx.scheme_id] = {
+                    "current_units": Decimal("0.0"),
+                    "investment": Decimal("0.0"),
+                    "total_purchased_units": Decimal("0.0"),
+                }
+            summary = mf_schemes_summary[tx.scheme_id]
+            amount = tx.amount or Decimal("0.0")
+            units = tx.units or Decimal("0.0")
+            if tx.type in [
+                "PURCHASE",
+                "SWITCH_IN",
+                "DIVIDEND_REINVEST",
+                "STP_IN",
+            ]:
+                summary["investment"] += amount
+                summary["current_units"] += units
+                summary["total_purchased_units"] += units
+                mf_cash_flows.append((tx.transaction_date, -amount))
+            elif tx.type in ["REDEMPTION", "SWITCH_OUT", "STP_OUT"]:
+                summary["current_units"] -= abs(units)
+                mf_cash_flows.append((tx.transaction_date, amount))
+
+        for scheme_id, summary in mf_schemes_summary.items():
+            if summary["current_units"] > Decimal("0.0001"):
+                avg_buy = (
+                    (summary["investment"] / summary["total_purchased_units"])
+                    if summary["total_purchased_units"] > 0
+                    else Decimal("0.0")
+                )
+                cost_basis_active = summary["current_units"] * avg_buy
+                mf_investment_active += cost_basis_active
+
+                latest_nav = latest_navs.get(scheme_id, Decimal("0.0"))
+                mf_current_value += summary["current_units"] * latest_nav
+
+        if mf_current_value > 0:
+            mf_cash_flows.append((today, mf_current_value))
+
+        overall_cash_flows.extend(mf_cash_flows)
+        asset_data["mutual_funds"]["investment"] = mf_investment_active
+        asset_data["mutual_funds"]["current_value"] = mf_current_value
+        asset_data["mutual_funds"]["xirr"] = calculate_xirr(mf_cash_flows)
+    except Exception as e:
+        print(f"Error calculating Mutual Funds dashboard: {e}")
+
+    # === 4. Stocks Calculation ===
+    try:
+        tx_query = StockTransaction.query
+        if user_id:
+            tx_query = tx_query.filter_by(user_id=user_id)
+        transactions = tx_query.all()
+
+        latest_val_subq = (
+            db.session.query(
+                StockValuation.stock_id,
+                db.func.max(StockValuation.valuation_date).label("max_date"),
+            )
+            .group_by(StockValuation.stock_id)
+            .subquery()
+        )
+        latest_val_query = (
+            db.session.query(StockValuation)
+            .join(
+                latest_val_subq,
+                db.and_(
+                    StockValuation.stock_id == latest_val_subq.c.stock_id,
+                    StockValuation.valuation_date
+                    == latest_val_subq.c.max_date,
+                ),
+            )
+            .all()
+        )
+        latest_valuations = {
+            val.stock_id: val.price for val in latest_val_query
+        }
+
+        stock_summary_temp = {}
+        stocks_cash_flows = []
+        stocks_investment_active = Decimal("0.0")
+        stocks_current_value = Decimal("0.0")
+
+        for tx in transactions:
+            if tx.stock_id not in stock_summary_temp:
+                stock_summary_temp[tx.stock_id] = []
+            stock_summary_temp[tx.stock_id].append(tx)
+
+        for stock_id, tx_list in stock_summary_temp.items():
+            # --- THIS IS THE FIX ---
+            tx_list.sort(
+                key=lambda x: (
+                    x.trade_date,
+                    (
+                        x.order_execution_time.time()
+                        if x.order_execution_time
+                        else datetime.min.time()
+                    ),
+                )
+            )
+            # -----------------------
+
+            current_units = Decimal("0.0")
+            total_buy_cost = Decimal("0.0")
+            total_buy_units = Decimal("0.0")
+            for tx in tx_list:
+                tx_value = tx.quantity * tx.price
+                if tx.trade_type == "buy":
+                    current_units += tx.quantity
+                    total_buy_units += tx.quantity
+                    total_buy_cost += tx_value
+                    stocks_cash_flows.append((tx.trade_date, -tx_value))
+                elif tx.trade_type == "sell":
+                    current_units -= tx.quantity
+                    stocks_cash_flows.append((tx.trade_date, tx_value))
+
+            if current_units > Decimal("0.0001"):
+                avg_buy_price = (
+                    (total_buy_cost / total_buy_units)
+                    if total_buy_units > 0
+                    else Decimal("0.0")
+                )
+                investment_basis = current_units * avg_buy_price
+                stocks_investment_active += investment_basis
+
+                latest_price = latest_valuations.get(stock_id, Decimal("0.0"))
+                current_val = current_units * latest_price
+                stocks_current_value += current_val
+
+        if stocks_current_value > 0:
+            stocks_cash_flows.append((today, stocks_current_value))
+
+        overall_cash_flows.extend(stocks_cash_flows)
+        asset_data["stocks"]["investment"] = stocks_investment_active
+        asset_data["stocks"]["current_value"] = stocks_current_value
+        asset_data["stocks"]["xirr"] = calculate_xirr(stocks_cash_flows)
+    except Exception as e:
+        print(f"Error calculating Stocks dashboard: {e}")
+
+    # --- Final Overall Summary ---
+    total_investment = sum(v["investment"] for v in asset_data.values())
+    total_current_value = sum(v["current_value"] for v in asset_data.values())
+    total_pnl = total_current_value - total_investment
+    overall_xirr = calculate_xirr(overall_cash_flows)
+
+    summary = {
+        "total_investment": total_investment,
+        "total_current_value": total_current_value,
+        "total_pnl": total_pnl,
+        "overall_xirr": overall_xirr,
+    }
+
+    return render_template(
+        "dashboard.html",
+        summary=summary,
+        asset_data=asset_data,  # Pass data for charts
+        all_users=all_users,
+        selected_user_id=user_id,
+    )
+
+
 # === User CRUD Routes ===
 
 
