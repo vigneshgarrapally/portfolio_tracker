@@ -17,7 +17,11 @@ from app.models import (
     MutualFundFolio,
     MutualFundTransaction,
     MutualFundNAV,
+    Stock,
+    StockTransaction,
+    StockValuation,
 )
+from kiteconnect import KiteConnect
 from datetime import datetime, date
 from decimal import Decimal, InvalidOperation
 from markupsafe import Markup
@@ -2034,3 +2038,788 @@ def fetch_all_navs():
         flash(Markup(error_html), "warning")
 
     return redirect(url_for("mutual_funds"))
+
+
+@app.route("/stocks")
+def stocks():
+    """Display the main Stocks dashboard."""
+    user_id = request.args.get("user_id", type=int)
+    all_users = User.query.order_by(User.name).all()
+
+    # --- Base query for transactions ---
+    tx_query = StockTransaction.query
+    if user_id:
+        tx_query = tx_query.filter_by(user_id=user_id)
+
+    transactions = (
+        tx_query.options(db.joinedload(StockTransaction.stock))
+        .order_by(StockTransaction.stock_id, StockTransaction.trade_date)
+        .all()
+    )
+
+    # --- Get Latest Valuations for all stocks ---
+    latest_val_subq = (
+        db.session.query(
+            StockValuation.stock_id,
+            db.func.max(StockValuation.valuation_date).label("max_date"),
+        )
+        .group_by(StockValuation.stock_id)
+        .subquery()
+    )
+
+    latest_val_query = (
+        db.session.query(StockValuation)
+        .join(
+            latest_val_subq,
+            db.and_(
+                StockValuation.stock_id == latest_val_subq.c.stock_id,
+                StockValuation.valuation_date == latest_val_subq.c.max_date,
+            ),
+        )
+        .all()
+    )
+    latest_valuations = {val.stock_id: val.price for val in latest_val_query}
+
+    # --- Process transactions to aggregate data by stock ---
+    stocks_summary_temp = {}
+    overall_cash_flows = []  # For overall XIRR
+
+    for tx in transactions:
+        stock_id = tx.stock_id
+        if stock_id not in stocks_summary_temp:
+            stocks_summary_temp[stock_id] = {
+                "stock": tx.stock,
+                "transactions": [],
+            }
+        stocks_summary_temp[stock_id]["transactions"].append(tx)
+
+    active_holdings = {}
+    inactive_holdings = {}
+    total_investment_overall = Decimal("0.0")
+    total_current_value_overall = Decimal("0.0")
+    total_realized_pnl_overall = Decimal("0.0")
+
+    ZERO_TOLERANCE = Decimal("0.0001")  # For checking if units are zero
+
+    for stock_id, summary in stocks_summary_temp.items():
+        # Calculate holding details using average cost
+        current_units = Decimal("0.0")
+        total_buy_cost = Decimal("0.0")
+        total_buy_units = Decimal("0.0")
+        total_sell_value = Decimal("0.0")
+        total_sell_units = Decimal("0.0")
+        stock_cash_flows = []
+
+        # Sort transactions by date to process in order
+        summary["transactions"].sort(
+            key=lambda x: (
+                x.trade_date,
+                (
+                    x.order_execution_time.time()
+                    if x.order_execution_time
+                    else datetime.min.time()
+                ),
+            )
+        )
+
+        for tx in summary["transactions"]:
+            tx_value = tx.quantity * tx.price
+            if tx.trade_type == "buy":
+                current_units += tx.quantity
+                total_buy_units += tx.quantity
+                total_buy_cost += tx_value
+                stock_cash_flows.append((tx.trade_date, -tx_value))
+                overall_cash_flows.append((tx.trade_date, -tx_value))
+            elif tx.trade_type == "sell":
+                current_units -= tx.quantity
+                total_sell_units += tx.quantity
+                total_sell_value += tx_value
+                stock_cash_flows.append((tx.trade_date, tx_value))
+                overall_cash_flows.append((tx.trade_date, tx_value))
+
+        summary["current_units"] = current_units
+        summary["avg_buy_price"] = (
+            (total_buy_cost / total_buy_units)
+            if total_buy_units > 0
+            else Decimal("0.0")
+        )
+
+        # Cost of sold units (based on average price)
+        cost_of_sold_units = total_sell_units * summary["avg_buy_price"]
+        summary["realized_pnl"] = total_sell_value - cost_of_sold_units
+
+        # Investment is the cost basis of *remaining* units
+        summary["investment"] = current_units * summary["avg_buy_price"]
+
+        latest_price = latest_valuations.get(stock_id, Decimal("0.0"))
+        summary["current_price"] = latest_price
+        summary["current_value"] = current_units * latest_price
+        summary["unrealized_pnl"] = (
+            summary["current_value"] - summary["investment"]
+        )
+
+        # Add current value to cash flow for XIRR
+        if current_units > ZERO_TOLERANCE and latest_price > 0:
+            stock_cash_flows.append((date.today(), summary["current_value"]))
+        summary["xirr"] = calculate_xirr(stock_cash_flows)
+
+        # --- Separate active/inactive ---
+        if current_units > ZERO_TOLERANCE:
+            active_holdings[stock_id] = summary
+            total_current_value_overall += summary["current_value"]
+            total_investment_overall += summary[
+                "investment"
+            ]  # Only count investment of active
+        else:
+            inactive_holdings[stock_id] = summary
+
+        total_realized_pnl_overall += summary["realized_pnl"]
+
+        del summary["transactions"]  # Clean up
+
+    # Add total current value to overall XIRR cash flow
+    if total_current_value_overall > 0:
+        overall_cash_flows.append((date.today(), total_current_value_overall))
+
+    # --- START OF ADDITION: Sort active_holdings by investment value (Descending) ---
+    sorted_active_holdings_list = sorted(
+        active_holdings.items(),
+        key=lambda item: item[1]["current_value"],
+        reverse=True,
+    )
+    # Recreate the dictionary (Python 3.7+ maintains insertion order)
+    active_holdings_sorted = dict(sorted_active_holdings_list)
+    # --- END OF ADDITION ---
+
+    overall_summary = {
+        "total_investment": total_investment_overall,
+        "total_current_value": total_current_value_overall,
+        "total_pnl": (total_current_value_overall - total_investment_overall)
+        + total_realized_pnl_overall,
+        "overall_xirr": calculate_xirr(overall_cash_flows),
+    }
+
+    return render_template(
+        "stocks.html",
+        active_holdings=active_holdings_sorted,  # Use the sorted variable here
+        inactive_holdings=inactive_holdings,
+        summary=overall_summary,
+        all_users=all_users,
+        selected_user_id=user_id,
+    )
+
+
+@app.route("/stocks/view/<int:stock_id>")
+def view_stock(stock_id):
+    """View details, transactions, and valuations for a single stock."""
+    user_id = request.args.get("user_id", type=int)  # For filtering
+    users = User.query.order_by(User.name).all()
+    stock = Stock.query.get_or_404(stock_id)
+
+    # Base transaction query
+    tx_query = StockTransaction.query.filter_by(stock_id=stock_id)
+    if user_id:
+        tx_query = tx_query.filter_by(user_id=user_id)
+
+    transactions = tx_query.order_by(
+        StockTransaction.trade_date.asc(),
+        StockTransaction.order_execution_time.asc(),
+    ).all()
+
+    # Base valuation query
+    valuations = (
+        StockValuation.query.filter_by(stock_id=stock_id)
+        .order_by(StockValuation.valuation_date.desc())
+        .all()
+    )
+
+    # --- Calculate Stats (Same logic as in /stocks) ---
+    current_units = Decimal("0.0")
+    total_buy_cost = Decimal("0.0")
+    total_buy_units = Decimal("0.0")
+    total_sell_value = Decimal("0.0")
+    total_sell_units = Decimal("0.0")
+    cash_flows = []
+
+    for tx in transactions:
+        tx_value = tx.quantity * tx.price
+        if tx.trade_type == "buy":
+            current_units += tx.quantity
+            total_buy_units += tx.quantity
+            total_buy_cost += tx_value
+            cash_flows.append((tx.trade_date, -tx_value))
+        elif tx.trade_type == "sell":
+            current_units -= tx.quantity
+            total_sell_units += tx.quantity
+            total_sell_value += tx_value
+            cash_flows.append((tx.trade_date, tx_value))
+
+    avg_buy_price = (
+        (total_buy_cost / total_buy_units)
+        if total_buy_units > 0
+        else Decimal("0.0")
+    )
+    cost_of_sold_units = total_sell_units * avg_buy_price
+    realized_pnl = total_sell_value - cost_of_sold_units
+    investment = (
+        current_units * avg_buy_price
+    )  # Cost basis of current holding
+
+    latest_price = valuations[0].price if valuations else Decimal("0.0")
+    current_value = current_units * latest_price
+    unrealized_pnl = current_value - investment
+
+    if current_units > 0 and latest_price > 0:
+        cash_flows.append((date.today(), current_value))
+
+    xirr = calculate_xirr(cash_flows)
+
+    stats = {
+        "current_units": current_units,
+        "avg_buy_price": avg_buy_price,
+        "investment": investment,
+        "current_value": current_value,
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": realized_pnl + unrealized_pnl,
+        "xirr": xirr,
+        "latest_price": latest_price,
+        "latest_price_date": (
+            valuations[0].valuation_date if valuations else None
+        ),
+    }
+
+    return render_template(
+        "view_stock.html",
+        stock=stock,
+        transactions=transactions,
+        valuations=valuations,
+        stats=stats,
+        all_users=users,
+        selected_user_id=user_id,
+    )
+
+
+@app.route("/stocks/upload_csv", methods=["GET", "POST"])
+def upload_stock_csv():
+    """Upload Zerodha CSV trades file."""
+    if request.method == "POST":
+        if "file" not in request.files:
+            flash("No file part", "danger")
+            return redirect(url_for("upload_stock_csv"))
+
+        file = request.files["file"]
+        user_id = request.form.get("user_id")
+
+        if not user_id:
+            flash("You must select a user.", "danger")
+            return redirect(url_for("upload_stock_csv"))
+
+        if file.filename == "":
+            flash("No selected file", "danger")
+            return redirect(url_for("upload_stock_csv"))
+
+        if not file.filename.endswith(".csv"):
+            flash("Invalid file type. Please upload a .csv file.", "danger")
+            return redirect(url_for("upload_stock_csv"))
+
+        stocks_cache = {}
+        transactions_to_add = []
+        errors = []
+
+        # Get existing trade IDs for this user to prevent duplicates
+        existing_trade_ids = {
+            t[0]
+            for t in db.session.query(StockTransaction.trade_id)
+            .filter_by(user_id=user_id)
+            .filter(StockTransaction.trade_id != None)
+            .all()
+        }
+
+        try:
+            file_stream = io.StringIO(file.stream.read().decode("utf-8-sig"))
+            csv_reader = csv.DictReader(file_stream)
+            data = list(csv_reader)
+
+            if not data:
+                flash("CSV file is empty.", "info")
+                return redirect(url_for("upload_stock_csv"))
+
+            for i, item in enumerate(data):
+                row_num = i + 1
+                try:
+                    trade_id = item.get("trade_id")
+                    isin = item.get("isin")
+                    symbol = item.get("symbol")
+
+                    if not trade_id or not isin or not symbol:
+                        errors.append(
+                            f"Row {row_num}: Missing required field (trade_id, isin, or symbol)."
+                        )
+                        continue
+
+                    if trade_id in existing_trade_ids:
+                        continue  # Skip duplicate
+
+                    # Find/Create Stock
+                    stock = stocks_cache.get(isin)
+                    if not stock:
+                        stock = Stock.query.filter_by(isin=isin).first()
+                        if not stock:
+                            stock = Stock(
+                                isin=isin,
+                                symbol=item.get("symbol"),
+                                segment=item.get("segment"),
+                                series=item.get("series"),
+                            )
+                            db.session.add(stock)
+                            db.session.flush()  # Get ID
+                        stocks_cache[isin] = stock
+
+                    # Parse execution time
+                    exec_time_str = item.get("order_execution_time")
+                    exec_time_obj = None
+                    if exec_time_str:
+                        try:
+                            exec_time_obj = datetime.fromisoformat(
+                                exec_time_str
+                            )
+                        except ValueError:
+                            exec_time_obj = datetime.strptime(
+                                exec_time_str, "%Y-%m-%d %H:%M:%S"
+                            )  # Fallback
+
+                    # Create Transaction
+                    new_tx = StockTransaction(
+                        user_id=user_id,
+                        stock_id=stock.id,
+                        trade_date=datetime.strptime(
+                            item.get("trade_date"), "%Y-%m-%d"
+                        ).date(),
+                        trade_type=item.get("trade_type"),  # 'buy' or 'sell'
+                        quantity=Decimal(item.get("quantity")),
+                        price=Decimal(item.get("price")),
+                        exchange=item.get("exchange"),
+                        trade_id=trade_id,
+                        order_id=item.get("order_id"),
+                        order_execution_time=exec_time_obj,
+                    )
+                    transactions_to_add.append(new_tx)
+
+                except Exception as e:
+                    errors.append(
+                        f"Row {row_num}: Error processing data - {e}. Data: {item}"
+                    )
+
+            # --- Atomic Commit ---
+            if errors:
+                db.session.rollback()
+                flash(
+                    f"Upload failed. {len(errors)} errors found. No records were added.",
+                    "danger",
+                )
+                error_html = (
+                    "<ul>"
+                    + "".join([f"<li>{e}</li>" for e in errors[:5]])
+                    + "</ul>"
+                )
+                if len(errors) > 5:
+                    error_html += (
+                        f"<p>...and {len(errors) - 5} more errors.</p>"
+                    )
+                flash(Markup(error_html), "danger")
+            elif not transactions_to_add:
+                flash("No new transactions found in the file.", "info")
+            else:
+                db.session.add_all(transactions_to_add)
+                db.session.commit()
+                flash(
+                    f"Successfully uploaded and added {len(transactions_to_add)} new transactions.",
+                    "success",
+                )
+
+        except Exception as e:
+            db.session.rollback()
+            flash(f"An unexpected error occurred: {str(e)}", "danger")
+
+        return redirect(url_for("stocks"))
+
+    # GET request
+    users = User.query.order_by(User.name).all()
+    return render_template("upload_stock_csv.html", users=users)
+
+
+@app.route("/stocks/view/<int:stock_id>/add_tx", methods=["POST"])
+def add_stock_transaction(stock_id):
+    """Add a manual stock transaction from the view_stock page."""
+    stock = Stock.query.get_or_404(stock_id)
+    try:
+        user_id = request.form.get("user_id")
+        if not user_id:
+            flash("A user must be selected.", "danger")
+            return redirect(url_for("view_stock", stock_id=stock_id))
+
+        new_tx = StockTransaction(
+            user_id=user_id,
+            stock_id=stock_id,
+            trade_date=datetime.strptime(
+                request.form.get("trade_date"), "%Y-%m-%d"
+            ).date(),
+            trade_type=request.form.get("trade_type"),
+            quantity=Decimal(request.form.get("quantity")),
+            price=Decimal(request.form.get("price")),
+            exchange=request.form.get("exchange"),
+            trade_id=None,  # Manual entry
+        )
+        db.session.add(new_tx)
+        db.session.commit()
+        flash("Manual transaction added successfully.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error adding transaction: {str(e)}", "danger")
+
+    return redirect(url_for("view_stock", stock_id=stock_id))
+
+
+@app.route("/stocks/edit/<int:tx_id>", methods=["GET", "POST"])
+def edit_stock_transaction(tx_id):
+    """Edit a manual stock transaction."""
+    tx = StockTransaction.query.get_or_404(tx_id)
+    # if tx.trade_id is not None:
+    #     flash(
+    #         "Only manual transactions (those without a Trade ID) can be edited.",
+    #         "warning",
+    #     )
+    #     return redirect(url_for("view_stock", stock_id=tx.stock_id))
+
+    if request.method == "POST":
+        try:
+            tx.user_id = request.form.get("user_id")
+            tx.stock_id = request.form.get("stock_id")  # Keep this for safety
+            tx.trade_date = datetime.strptime(
+                request.form.get("trade_date"), "%Y-%m-%d"
+            ).date()
+            tx.trade_type = request.form.get("trade_type")
+            tx.quantity = Decimal(request.form.get("quantity"))
+            tx.price = Decimal(request.form.get("price"))
+            tx.exchange = request.form.get("exchange")
+
+            db.session.commit()
+            flash("Transaction updated successfully.", "success")
+            return redirect(url_for("view_stock", stock_id=tx.stock_id))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error updating transaction: {str(e)}", "danger")
+
+    users = User.query.order_by(User.name).all()
+    stocks = Stock.query.order_by(Stock.symbol).all()
+    return render_template(
+        "edit_stock_transaction.html", tx=tx, users=users, stocks=stocks
+    )
+
+
+@app.route("/stocks/delete/<int:tx_id>", methods=["POST"])
+def delete_stock_transaction(tx_id):
+    """Delete a manual stock transaction."""
+    tx = StockTransaction.query.get_or_404(tx_id)
+    stock_id = tx.stock_id  # For redirect
+    if tx.trade_id is not None:
+        flash(
+            "Only manual transactions (those without a Trade ID) can be deleted.",
+            "danger",
+        )
+        return redirect(url_for("view_stock", stock_id=stock_id))
+
+    try:
+        db.session.delete(tx)
+        db.session.commit()
+        flash("Manual transaction deleted.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting transaction: {str(e)}", "danger")
+
+    return redirect(url_for("view_stock", stock_id=stock_id))
+
+
+@app.route("/stocks/valuation/add/<int:stock_id>", methods=["POST"])
+def add_stock_valuation(stock_id):
+    """Add or update a manual valuation for a stock."""
+    try:
+        date_str = request.form.get("valuation_date")
+        price_str = request.form.get("price")
+
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+        price_obj = Decimal(price_str)
+
+        if price_obj <= 0:
+            flash("Price must be positive.", "danger")
+            return redirect(url_for("view_stock", stock_id=stock_id))
+
+        # --- Upsert Logic ---
+        val = StockValuation.query.filter_by(
+            stock_id=stock_id, valuation_date=date_obj
+        ).first()
+        if val:
+            val.price = price_obj
+            val.source = "Manual"
+            flash(f"Price updated for {date_str}.", "success")
+        else:
+            new_val = StockValuation(
+                stock_id=stock_id,
+                valuation_date=date_obj,
+                price=price_obj,
+                source="Manual",
+            )
+            db.session.add(new_val)
+            flash(f"Price added for {date_str}.", "success")
+
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error adding valuation: {str(e)}", "danger")
+
+    return redirect(url_for("view_stock", stock_id=stock_id))
+
+
+@app.route("/stocks/valuation/delete/<int:val_id>", methods=["POST"])
+def delete_stock_valuation(val_id):
+    """Delete a valuation entry."""
+    val = StockValuation.query.get_or_404(val_id)
+    stock_id = val.stock_id  # For redirect
+    try:
+        db.session.delete(val)
+        db.session.commit()
+        flash(
+            f'Valuation for {val.valuation_date.strftime("%Y-%m-%d")} deleted.',
+            "success",
+        )
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting valuation: {str(e)}", "danger")
+
+    return redirect(url_for("view_stock", stock_id=stock_id))
+
+
+@app.route("/stocks/fetch_prices", methods=["GET", "POST"])
+def fetch_stock_prices():
+    """
+    Handles the 2-step process for fetching prices from Zerodha.
+    GET: Shows login link and token form.
+    POST: Processes the request_token to get prices.
+    """
+    # Get secrets from app config
+    API_KEY = app.config.get("ZERODHA_API_KEY")
+    API_SECRET = app.config.get("ZERODHA_API_SECRET")
+
+    if not API_KEY or not API_SECRET:
+        flash(
+            "Zerodha API_KEY or API_SECRET is not configured in .env",
+            "danger",
+        )
+        return redirect(url_for("stocks"))
+
+    # Instantiate KiteConnect
+    kite = KiteConnect(api_key=API_KEY)
+
+    if request.method == "POST":
+        request_token = request.form.get("request_token")
+        if not request_token:
+            flash("No request_token provided.", "danger")
+            return redirect(url_for("fetch_stock_prices"))
+
+        try:
+            # 1. Generate Session
+            data = kite.generate_session(request_token, api_secret=API_SECRET)
+            kite.set_access_token(data["access_token"])
+
+            # 2. Fetch Holdings
+            holdings = kite.holdings()
+
+            # 3. Process Holdings and Update DB
+            today = date.today()
+            updated_count = 0
+            skipped = []
+
+            # Get all stocks from our DB by ISIN for efficient lookup
+            our_stocks = {stock.isin: stock for stock in Stock.query.all()}
+
+            # Get all existing valuations for *today* for efficient upsert
+            existing_vals = {
+                val.stock_id: val
+                for val in StockValuation.query.filter_by(
+                    valuation_date=today
+                ).all()
+            }
+
+            for holding in holdings:
+                isin = holding.get("isin")
+                last_price = holding.get(
+                    "close_price", holding.get("last_price")
+                )
+
+                if not isin or last_price is None:
+                    continue
+
+                # Find the stock in our DB
+                stock = our_stocks.get(isin)
+
+                if stock:
+                    price_decimal = Decimal(str(last_price))
+                    if price_decimal <= 0:
+                        continue  # Skip if price is 0
+
+                    # --- Upsert logic ---
+                    val = existing_vals.get(stock.id)
+                    if val:
+                        # Update existing valuation for today
+                        val.price = price_decimal
+                        val.source = "Zerodha API"
+                    else:
+                        # Create new valuation for today
+                        new_val = StockValuation(
+                            stock_id=stock.id,
+                            valuation_date=today,
+                            price=price_decimal,
+                            source="Zerodha API",
+                        )
+                        db.session.add(new_val)
+
+                    updated_count += 1
+                else:
+                    # We don't have this stock in our DB
+                    skipped.append(holding.get("tradingsymbol"))
+
+            db.session.commit()
+
+            flash(
+                f"Successfully updated prices for {updated_count} holdings.",
+                "success",
+            )
+            if skipped:
+                flash(
+                    f"Skipped {len(skipped)} holdings not found in DB: {', '.join(skipped[:5])}...",
+                    "warning",
+                )
+
+            return redirect(url_for("stocks"))
+
+        except Exception as e:
+            db.session.rollback()
+            flash(f"An error occurred with Zerodha API: {e}", "danger")
+            return redirect(url_for("fetch_stock_prices"))
+
+    # GET Request: Show the login link and the form
+    login_url = kite.login_url()
+
+    return render_template("fetch_stock_prices.html", login_url=login_url)
+
+
+@app.route("/stocks/add_stock", methods=["GET", "POST"])
+def add_stock():
+    """Manually add a new Stock (ISIN, Symbol, Name)."""
+    if request.method == "POST":
+        isin = request.form.get("isin").strip().upper()
+        symbol = request.form.get("symbol").strip().upper()
+        name = request.form.get("name").strip()
+
+        if not isin or not symbol:
+            flash("ISIN and Symbol are required.", "danger")
+            return redirect(url_for("add_stock"))
+
+        # Check for duplicates
+        if Stock.query.filter_by(isin=isin).first():
+            flash(f"A stock with ISIN {isin} already exists.", "danger")
+            return redirect(url_for("add_stock"))
+        if Stock.query.filter_by(symbol=symbol).first():
+            flash(f"A stock with Symbol {symbol} already exists.", "danger")
+            return redirect(url_for("add_stock"))
+
+        try:
+            new_stock = Stock(
+                isin=isin,
+                symbol=symbol,
+                name=name,
+                segment=request.form.get("segment"),
+                series=request.form.get("series"),
+            )
+            db.session.add(new_stock)
+            db.session.commit()
+            flash(f"Stock '{symbol}' added successfully.", "success")
+            return redirect(url_for("stocks"))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error adding stock: {str(e)}", "danger")
+
+    return render_template("add_stock.html")
+
+
+# --- NEW: Edit Stock (Entity) ---
+@app.route("/stocks/edit_stock/<int:stock_id>", methods=["GET", "POST"])
+def edit_stock(stock_id):
+    """Edit an existing Stock's details (Symbol, Name, etc.)."""
+    stock = Stock.query.get_or_404(stock_id)
+
+    if request.method == "POST":
+        isin = request.form.get("isin").strip().upper()
+        symbol = request.form.get("symbol").strip().upper()
+        name = request.form.get("name").strip()
+
+        if not isin or not symbol:
+            flash("ISIN and Symbol are required.", "danger")
+            return render_template("edit_stock.html", stock=stock)
+
+        # Check for duplicates (excluding itself)
+        if Stock.query.filter(
+            Stock.isin == isin, Stock.id != stock_id
+        ).first():
+            flash(f"Another stock with ISIN {isin} already exists.", "danger")
+            return render_template("edit_stock.html", stock=stock)
+        if Stock.query.filter(
+            Stock.symbol == symbol, Stock.id != stock_id
+        ).first():
+            flash(
+                f"Another stock with Symbol {symbol} already exists.",
+                "danger",
+            )
+            return render_template("edit_stock.html", stock=stock)
+
+        try:
+            stock.isin = isin
+            stock.symbol = symbol
+            stock.name = name
+            stock.segment = request.form.get("segment")
+            stock.series = request.form.get("series")
+            db.session.commit()
+            flash(f"Stock '{symbol}' updated successfully.", "success")
+            return redirect(url_for("stocks"))
+        except Exception as e:
+            db.session.rollback()
+            flash(f"Error updating stock: {str(e)}", "danger")
+
+    return render_template("edit_stock.html", stock=stock)
+
+
+# --- NEW: Delete Stock (Entity) ---
+@app.route("/stocks/delete_stock/<int:stock_id>", methods=["POST"])
+def delete_stock(stock_id):
+    """Delete a stock ONLY if it has no transactions."""
+    stock = Stock.query.get_or_404(stock_id)
+
+    if stock.transactions.count() > 0:
+        flash(
+            f"Cannot delete stock '{stock.symbol}' because it has transactions linked to it.",
+            "danger",
+        )
+        return redirect(url_for("stocks"))
+
+    try:
+        # Also delete any orphan valuations (though cascade should handle this)
+        StockValuation.query.filter_by(stock_id=stock_id).delete()
+        db.session.delete(stock)
+        db.session.commit()
+        flash(f"Stock '{stock.symbol}' deleted successfully.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"Error deleting stock: {str(e)}", "danger")
+
+    return redirect(url_for("stocks"))

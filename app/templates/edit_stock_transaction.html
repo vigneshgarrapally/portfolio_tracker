@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Edit Manual Transaction</h1>
+    <a href="{{ url_for('view_stock', stock_id=tx.stock_id) }}" class="btn btn-secondary">
+        <i class="bi bi-x-lg me-1"></i> Cancel
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h5 class="mb-0">{{ tx.stock.symbol }} - {{ tx.stock.name or tx.stock.isin }}</h5>
+    </div>
+    <div class="card-body">
+        <form action="{{ url_for('edit_stock_transaction', tx_id=tx.id) }}" method="POST">
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="user_id" class="form-label">User</label>
+                    <select class="form-select" id="user_id" name="user_id" required>
+                        {% for user in users %}
+                        <option value="{{ user.id }}" {{ 'selected' if user.id == tx.user_id else '' }}>{{ user.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="stock_id" class="form-label">Stock (Cannot change)</label>
+                    <select class="form-select" id="stock_id" name="stock_id" required disabled>
+                        {% for stock in stocks %}
+                        <option value="{{ stock.id }}" {{ 'selected' if stock.id == tx.stock_id else '' }}>{{ stock.symbol }} ({{ stock.name or stock.isin }})</option>
+                        {% endfor %}
+                    </select>
+                    <input type="hidden" name="stock_id" value="{{ tx.stock_id }}">
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="trade_date" class="form-label">Trade Date</label>
+                    <input type="date" class="form-control" id="trade_date" name="trade_date" value="{{ tx.trade_date.strftime('%Y-%m-%d') }}" required>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="trade_type" class="form-label">Trade Type</label>
+                    <select class="form-select" id="trade_type" name="trade_type" required>
+                        <option value="buy" {{ 'selected' if tx.trade_type == 'buy' else '' }}>Buy</option>
+                        <option value="sell" {{ 'selected' if tx.trade_type == 'sell' else '' }}>Sell</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label for="quantity" class="form-label">Quantity</label>
+                    <input type="number" step="0.0001" class="form-control" id="quantity" name="quantity" value="{{ tx.quantity }}" required>
+                </div>
+                 <div class="col-md-4 mb-3">
+                    <label for="price" class="form-label">Price (per share)</label>
+                    <input type="number" step="0.0001" class="form-control" id="price" name="price" value="{{ tx.price }}" required>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label for="exchange" class="form-label">Exchange</label>
+                    <input type="text" class="form-control" id="exchange" name="exchange" value="{{ tx.exchange or '' }}" placeholder="e.g., NSE, BSE">
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Update Transaction</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

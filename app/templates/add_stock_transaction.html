@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Add Manual Stock Transaction</h1>
+    <a href="{{ url_for('stocks') }}" class="btn btn-secondary">
+        <i class="bi bi-x-lg me-1"></i> Cancel
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form action="{{ url_for('add_stock_transaction') }}" method="POST">
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="user_id" class="form-label">User</label>
+                    <select class="form-select" id="user_id" name="user_id" required>
+                        <option value="" disabled selected>Select a user...</option>
+                        {% for user in users %}
+                        <option value="{{ user.id }}">{{ user.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="stock_id" class="form-label">Stock</label>
+                    <select class="form-select" id="stock_id" name="stock_id" required>
+                        <option value="" disabled selected>Select a stock...</option>
+                        {% for stock in stocks %}
+                        <option value="{{ stock.id }}">{{ stock.symbol }} ({{ stock.name or stock.isin }})</option>
+                        {% endfor %}
+                    </select>
+                     <small class="text-muted">If stock is not listed, upload a CSV with its ISIN first.</small>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="trade_date" class="form-label">Trade Date</label>
+                    <input type="date" class="form-control" id="trade_date" name="trade_date" required>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="trade_type" class="form-label">Trade Type</label>
+                    <select class="form-select" id="trade_type" name="trade_type" required>
+                        <option value="buy">Buy</option>
+                        <option value="sell">Sell</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="row">
+                <div class="col-md-4 mb-3">
+                    <label for="quantity" class="form-label">Quantity</label>
+                    <input type="number" step="0.0001" class="form-control" id="quantity" name="quantity" required>
+                </div>
+                 <div class="col-md-4 mb-3">
+                    <label for="price" class="form-label">Price (per share)</label>
+                    <input type="number" step="0.0001" class="form-control" id="price" name="price" required>
+                </div>
+                <div class="col-md-4 mb-3">
+                    <label for="exchange" class="form-label">Exchange</label>
+                    <input type="text" class="form-control" id="exchange" name="exchange" placeholder="e.g., NSE, BSE">
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Save Transaction</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

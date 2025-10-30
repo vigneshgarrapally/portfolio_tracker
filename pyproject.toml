@@ -9,6 +9,7 @@ dependencies = [
     "flask>=3.1.2",
     "flask-bcrypt>=1.0.1",
     "flask-sqlalchemy>=3.1.1",
+    "kiteconnect>=5.0.1",
     "markupsafe>=3.0.3",
     "requests>=2.32.5",
     "selenium>=4.38.0",

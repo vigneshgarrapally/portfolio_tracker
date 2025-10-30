@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Upload Stock Trades (CSV)</h1>
+    <a href="{{ url_for('stocks') }}" class="btn btn-secondary">
+        <i class="bi bi-x-lg me-1"></i> Cancel
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form action="{{ url_for('upload_stock_csv') }}" method="POST" enctype="multipart/form-data">
+            <div class="alert alert-info">
+                Upload your trade history CSV file from Zerodha. The system will add new transactions based on the unique <strong>trade_id</strong>.
+            </div>
+
+            <div class="mb-3">
+                <label for="user_id" class="form-label">Link to User</label>
+                <select class="form-select" id="user_id" name="user_id" required>
+                    <option value="" disabled selected>Select a user...</option>
+                    {% for user in users %}
+                    <option value="{{ user.id }}">{{ user.name }}</option>
+                    {% endfor %}
+                </select>
+                <small class="text-muted">The CSV file does not contain user info, so you must link it to a user.</small>
+            </div>
+            
+            <div class="mb-3">
+                <label for="file" class="form-label">Stock Trades CSV File</label>
+                <input class="form-control" type="file" id="file" name="file" accept=".csv" required>
+            </div>
+            
+            <p class="form-text">
+                CSV file must contain a header row with:
+                <code>symbol</code>, <code>isin</code>, <code>trade_date</code>, <code>exchange</code>, 
+                <code>segment</code>, <code>series</code>, <code>trade_type</code>, <code>quantity</code>, 
+                <code>price</code>, <code>trade_id</code>, <code>order_id</code>, <code>order_execution_time</code>.
+            </p>
+            
+            <button type="submit" class="btn btn-success"
+                    onsubmit="this.disabled=true; this.innerHTML='<span class=\'spinner-border spinner-border-sm\' role=\'status\' aria-hidden=\'true\'></span> Processing...';">
+                <i class="bi bi-upload me-1"></i> Upload and Process
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

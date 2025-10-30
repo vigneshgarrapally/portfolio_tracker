@@ -3,7 +3,6 @@ from datetime import datetime
 from sqlalchemy.schema import CheckConstraint, UniqueConstraint
 from decimal import Decimal
 
-
 class User(db.Model):
     """
     Model for users.
@@ -42,6 +41,13 @@ class User(db.Model):
     )
     mutual_fund_folios = db.relationship(
         "MutualFundFolio",
+        back_populates="user",
+        lazy=True,
+        cascade="all, delete-orphan",
+    )
+
+    stock_transactions = db.relationship(
+        "StockTransaction",
         back_populates="user",
         lazy=True,
         cascade="all, delete-orphan",
@@ -483,3 +489,117 @@ class MutualFundNAV(db.Model):
 
     def __repr__(self):
         return f"<MutualFundNAV(Scheme: {self.scheme_id}, Date: {self.nav_date}, NAV: {self.nav})>"
+
+
+class Stock(db.Model):
+    """
+    Represents a unique stock, ETF, or security.
+    Uniquely identified by its ISIN.
+    """
+
+    __tablename__ = "stocks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    isin = db.Column(db.String(20), unique=True, nullable=False, index=True)
+    symbol = db.Column(db.String(50), nullable=False, index=True)
+    name = db.Column(
+        db.String(255), nullable=True
+    )  # e.g., "Titagharh Rail Systems Ltd."
+    segment = db.Column(db.String(10), nullable=True)  # e.g., "EQ"
+    series = db.Column(db.String(10), nullable=True)  # e.g., "EQ"
+
+    # Relationships
+    transactions = db.relationship(
+        "StockTransaction",
+        back_populates="stock",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
+    valuations = db.relationship(
+        "StockValuation",
+        back_populates="stock",
+        lazy="dynamic",
+        cascade="all, delete-orphan",
+    )
+
+    def __repr__(self):
+        return f"<Stock(Symbol: '{self.symbol}', ISIN: '{self.isin}')>"
+
+
+class StockTransaction(db.Model):
+    """
+    Represents a single stock trade (buy or sell) by a user.
+    """
+
+    __tablename__ = "stock_transactions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(
+        db.Integer, db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    stock_id = db.Column(
+        db.Integer, db.ForeignKey("stocks.id"), nullable=False, index=True
+    )
+
+    trade_date = db.Column(db.Date, nullable=False, index=True)
+    trade_type = db.Column(db.String(10), nullable=False)  # 'buy' or 'sell'
+    quantity = db.Column(db.Numeric(14, 4), nullable=False)
+    price = db.Column(db.Numeric(14, 4), nullable=False)
+
+    exchange = db.Column(db.String(10), nullable=True)  # "NSE", "BSE"
+
+    # --- For Deduplication ---
+    # trade_id is unique per broker trade. Can be NULL for manual entries.
+    trade_id = db.Column(db.String(50), nullable=True, index=True)
+    order_id = db.Column(db.String(50), nullable=True, index=True)
+    order_execution_time = db.Column(db.DateTime, nullable=True)
+
+    # Relationships
+    user = db.relationship("User", back_populates="stock_transactions")
+    stock = db.relationship("Stock", back_populates="transactions")
+
+    __table_args__ = (
+        # A user cannot have the same trade_id twice.
+        UniqueConstraint("user_id", "trade_id", name="uq_user_trade_id"),
+        CheckConstraint(
+            "quantity > 0", name="check_stock_tx_quantity_positive"
+        ),
+        CheckConstraint("price >= 0", name="check_stock_tx_price_positive"),
+    )
+
+    def __repr__(self):
+        return f"<StockTransaction(User: {self.user_id}, Type: {self.trade_type}, Qty: {self.quantity}, Price: {self.price})>"
+
+
+class StockValuation(db.Model):
+    """
+    Stores manual or API-fetched prices for a stock on a given date.
+    """
+
+    __tablename__ = "stock_valuations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    stock_id = db.Column(
+        db.Integer, db.ForeignKey("stocks.id"), nullable=False, index=True
+    )
+    valuation_date = db.Column(db.Date, nullable=False, index=True)
+    price = db.Column(db.Numeric(14, 4), nullable=False)
+    source = db.Column(
+        db.String(50), nullable=True, default="Manual"
+    )  # "Manual", "API_LIVE"
+
+    # Relationship
+    stock = db.relationship("Stock", back_populates="valuations")
+
+    __table_args__ = (
+        # One price per stock per day
+        UniqueConstraint(
+            "stock_id", "valuation_date", name="uq_stock_date_price"
+        ),
+        CheckConstraint(
+            "price > 0", name="check_stock_valuation_price_positive"
+        ),
+    )
+
+    def __repr__(self):
+        return f"<StockValuation(Stock: {self.stock_id}, Date: {self.valuation_date}, Price: {self.price})>"

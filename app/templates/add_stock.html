@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h3 mb-0">Add New Stock</h1>
+    <a href="{{ url_for('stocks') }}" class="btn btn-secondary">
+        <i class="bi bi-x-lg me-1"></i> Cancel
+    </a>
+</div>
+
+<div class="card">
+    <div class="card-body">
+        <form action="{{ url_for('add_stock') }}" method="POST">
+            <p class="text-muted">Manually add a stock to the database. This is only needed if the stock is not in your CSV upload. Transactions must be added separately.</p>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="isin" class="form-label">ISIN</label>
+                    <input type="text" class="form-control" id="isin" name="isin" placeholder="INE001A01036" required>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="symbol" class="form-label">Symbol</label>
+                    <input type="text" class="form-control" id="symbol" name="symbol" placeholder="RELIANCE" required>
+                </div>
+            </div>
+            <div class="mb-3">
+                <label for="name" class="form-label">Stock Name</label>
+                <input type="text" class="form-control" id="name" name="name" placeholder="Reliance Industries Ltd.">
+            </div>
+             <div class="row">
+                <div class="col-md-6 mb-3">
+                    <label for="segment" class="form-label">Segment</label>
+                    <input type="text" class="form-control" id="segment" name="segment" placeholder="EQ" value="EQ">
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="series" class="form-label">Series</label>
+                    <input type="text" class="form-control" id="series" name="series" placeholder="EQ" value="EQ">
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Save Stock</button>
+        </form>
+    </div>
+</div>
+{% endblock %}
